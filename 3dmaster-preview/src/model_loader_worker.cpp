@@ -2325,16 +2325,25 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
             QString cachedStpPath = cacheDir + "/ug_" + hashKey + ".stp";
 
             bool stpReady = false;
-            // 校验已有缓存是否完整有效 (检查 ISO-10303-21 标头)
-            if (QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
-                QFile checkStp(cachedStpPath);
-                if (checkStp.open(QIODevice::ReadOnly)) {
-                    QByteArray stpHead = checkStp.read(1024);
-                    checkStp.close();
-                    if (stpHead.contains("ISO-10303-21") || stpHead.contains("STEP")) {
-                        traceWorkerLog("parsePRT: Found existing valid cached STEP translation: " + cachedStpPath);
-                        stpReady = true;
+            // 校验已有缓存是否完整有效 (严格校验 ISO-10303-21 标头)
+            if (QFile::exists(cachedStpPath)) {
+                bool cacheValid = false;
+                if (QFileInfo(cachedStpPath).size() > 0) {
+                    QFile checkStp(cachedStpPath);
+                    if (checkStp.open(QIODevice::ReadOnly)) {
+                        QByteArray stpHead = checkStp.read(1024);
+                        checkStp.close();
+                        if (stpHead.contains("ISO-10303-21")) {
+                            cacheValid = true;
+                        }
                     }
+                }
+                if (cacheValid) {
+                    traceWorkerLog("parsePRT: Found existing valid cached STEP translation: " + cachedStpPath);
+                    stpReady = true;
+                } else {
+                    traceWorkerLog("parsePRT: Found corrupted cached STEP file, purging: " + cachedStpPath);
+                    QFile::remove(cachedStpPath);
                 }
             }
 
@@ -2362,21 +2371,26 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     env.insert("UGII_ENV_FILE", QDir::toNativeSeparators(envDat));
                 }
 
-                // 加固: 全版本 Siemens 许可证环境变量齐备（SPLM_LICENSE_SERVER 与 UGS_LICENSE_SERVER）
-                QString lic = qEnvironmentVariable("SPLM_LICENSE_SERVER");
+                // 加固: 全版本 Siemens 许可证环境变量齐备并按类型严格路由
+                // 1. 注册表与准入目录配对出的许可证优先于散落环境变量
+                QString lic = detectedLic;
+                if (lic.isEmpty()) lic = qEnvironmentVariable("SPLM_LICENSE_SERVER");
                 if (lic.isEmpty()) lic = qEnvironmentVariable("UGS_LICENSE_SERVER");
                 if (lic.isEmpty()) lic = qEnvironmentVariable("UGII_LICENSE_FILE");
-                if (lic.isEmpty() && !detectedLic.isEmpty()) lic = detectedLic;
                 if (lic.isEmpty() && QFile::exists("C:/ProgramData/Siemens/siemens_SSQ.dat")) {
                     lic = "C:\\ProgramData\\Siemens\\siemens_SSQ.dat";
                 }
                 if (!lic.isEmpty()) {
                     if (lic.contains('@')) {
+                        // 端口@主机 格式：服务型变量
                         env.insert("SPLM_LICENSE_SERVER", lic);
                         env.insert("UGS_LICENSE_SERVER", lic);
+                        env.remove("UGII_LICENSE_FILE");
                     } else {
+                        // 节点锁定文件路径：仅写入文件型变量，清理服务型变量
                         env.insert("UGII_LICENSE_FILE", lic);
-                        env.insert("SPLM_LICENSE_SERVER", lic);
+                        env.remove("SPLM_LICENSE_SERVER");
+                        env.remove("UGS_LICENSE_SERVER");
                     }
                 }
 
@@ -2487,12 +2501,11 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     if (QFile::exists(cachedStpPath)) QFile::remove(cachedStpPath);
                     if (QFile::rename(tempStpPath, cachedStpPath)) {
                         stpReady = true;
-                    } else if (QFile::exists(cachedStpPath)) {
-                        QFile::remove(tempStpPath);
-                        stpReady = true;
-                    } else {
+                    } else if (!QFile::exists(cachedStpPath)) {
                         cachedStpPath = tempStpPath;
                         stpReady = true;
+                    } else {
+                        QFile::remove(tempStpPath);
                     }
 #endif
                 } else {
