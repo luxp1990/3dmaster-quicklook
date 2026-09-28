@@ -2190,15 +2190,28 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
 
     if (isOle2) {
         // 现代所有主流版本的 Siemens NX / UG PRT 文件均采用 OLE2 复合文档封装
-        // 严格匹配专有属性流或根对象节点特征，杜绝任意 OLE 复合文档（如旧版 Office）与短字母误判
-        if (header.contains("UgAttributes") || header.contains("UGII") ||
-            header.contains("OM_root_object") || header.contains("Siemens PLM") ||
-            header.contains("UG_PART") || header.contains("NX_PART")) {
+        // 微软 CFBF 规范中，目录扇区存储的流名称为 UTF-16LE 编码；同时数据扇区可能包含 ASCII 流名或标识
+        auto matchesStreamName = [&](const char* asciiName) -> bool {
+            if (header.contains(asciiName)) return true;
+            QByteArray utf16Bytes;
+            for (int i = 0; asciiName[i] != '\0'; ++i) {
+                utf16Bytes.append(asciiName[i]);
+                utf16Bytes.append('\0');
+            }
+            return header.contains(utf16Bytes);
+        };
+
+        if (matchesStreamName("UgAttributes") || matchesStreamName("UGII") ||
+            matchesStreamName("OM_root_object") || matchesStreamName("Siemens PLM") ||
+            matchesStreamName("UG_PART") || matchesStreamName("NX_PART") ||
+            matchesStreamName("UGPart") || matchesStreamName("NXPart")) {
             isSiemensNX = true;
         }
-    } else if (header.contains("UGII") || header.contains("hp7151") || header.contains("Sparc") || header.contains("OM_root_object")) {
+    } else if (header.contains("UGII") || header.contains("OM_root_object") ||
+               (header.contains("hp7151") && header.contains("UG"))) {
         isSiemensNX = true;
-    } else if (header.contains("#UGC:") || header.startsWith("#PRT") || header.contains("Creo") || header.contains("Pro/ENGINEER")) {
+    } else if (header.startsWith("#UGC:") || header.startsWith("#PRT") ||
+               (header.contains("Pro/ENGINEER") && header.contains("PART"))) {
         isCreo = true;
     }
 
@@ -2207,46 +2220,66 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
     traceWorkerLog(QString("parsePRT: Identified vendor: %1 (isNX: %2, isCreo: %3)")
                    .arg(cadVendor).arg(isSiemensNX).arg(isCreo));
 
+    QString detectedUgBaseDir;
+    QString detectedLic;
+
     // 如果识别为西门子 UG/NX，尝试调用本机安装的 NX 静默转码引擎 (Local Headless Converter Bridge)
     if (isSiemensNX) {
-        QString ugBaseDir = qEnvironmentVariable("UGII_BASE_DIR");
-        QString licFromReg;
+        detectedUgBaseDir = qEnvironmentVariable("UGII_BASE_DIR");
 
 #ifdef Q_OS_WIN
-        // 1. 优先扫描 Windows 注册表中的真实 NX/Unigraphics 安装记录（支持任意自定义盘符与连续版本）
-        if (ugBaseDir.isEmpty() || !QDir(ugBaseDir).exists()) {
+        // 1. 扫描 Windows 注册表中的真实 NX/Unigraphics 安装记录（覆盖 64位与 WOW6432 视图及各类供应商主键）
+        if (detectedUgBaseDir.isEmpty() || !QDir(detectedUgBaseDir).exists()) {
             const QStringList regRoots = {
-                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Unigraphics Solutions\\NX",
                 "HKEY_LOCAL_MACHINE\\SOFTWARE\\Siemens\\NX",
-                "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Unigraphics Solutions\\NX",
-                "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Siemens\\NX"
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Siemens PLM Software\\NX",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Unigraphics Solutions\\NX",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Siemens\\NX",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Siemens PLM Software\\NX",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Unigraphics Solutions\\NX"
             };
             for (const QString& root : regRoots) {
                 QSettings settings(root, QSettings::NativeFormat);
+                // 先尝试读取本键下直接配置的路径
+                QString directDir = settings.value("UGII_BASE_DIR").toString();
+                if (directDir.isEmpty()) directDir = settings.value("INSTALLDIR").toString();
+                if (!directDir.isEmpty()) {
+                    directDir = QDir::fromNativeSeparators(directDir);
+                    while (directDir.endsWith('/')) directDir.chop(1);
+                    if (QDir(directDir).exists() && QFile::exists(directDir + "/STEP214UG/step214ug.exe")) {
+                        detectedUgBaseDir = directDir;
+                        if (detectedLic.isEmpty()) detectedLic = settings.value("SPLM_LICENSE_SERVER").toString();
+                        if (detectedLic.isEmpty()) detectedLic = settings.value("LICENSESERVER").toString();
+                        break;
+                    }
+                }
+
+                // 再遍历各版本子键
                 const QStringList versions = settings.childGroups();
                 for (const QString& ver : versions) {
                     settings.beginGroup(ver);
                     QString dir = settings.value("UGII_BASE_DIR").toString();
                     if (dir.isEmpty()) dir = settings.value("INSTALLDIR").toString();
-                    if (licFromReg.isEmpty()) licFromReg = settings.value("LICENSESERVER").toString();
+                    if (detectedLic.isEmpty()) detectedLic = settings.value("SPLM_LICENSE_SERVER").toString();
+                    if (detectedLic.isEmpty()) detectedLic = settings.value("LICENSESERVER").toString();
                     settings.endGroup();
 
                     if (!dir.isEmpty()) {
                         dir = QDir::fromNativeSeparators(dir);
                         while (dir.endsWith('/')) dir.chop(1);
                         if (QDir(dir).exists() && QFile::exists(dir + "/STEP214UG/step214ug.exe")) {
-                            ugBaseDir = dir;
+                            detectedUgBaseDir = dir;
                             break;
                         }
                     }
                 }
-                if (!ugBaseDir.isEmpty()) break;
+                if (!detectedUgBaseDir.isEmpty()) break;
             }
         }
 #endif
 
         // 2. 多盘符常见安装目录扫描保底 (覆盖主流 NX 8.5 到 NX 2412 各版本)
-        if (ugBaseDir.isEmpty() || !QDir(ugBaseDir).exists()) {
+        if (detectedUgBaseDir.isEmpty() || !QDir(detectedUgBaseDir).exists()) {
             const QStringList drives = { "C:", "D:", "E:", "F:" };
             const QStringList subPaths = {
                 "/Program Files/Siemens/NX 10.0", "/Program Files/Siemens/NX 11.0",
@@ -2261,17 +2294,17 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                 for (const QString& sub : subPaths) {
                     QString cand = drive + sub;
                     if (QDir(cand).exists() && QFile::exists(cand + "/STEP214UG/step214ug.exe")) {
-                        ugBaseDir = cand;
+                        detectedUgBaseDir = cand;
                         break;
                     }
                 }
-                if (!ugBaseDir.isEmpty()) break;
+                if (!detectedUgBaseDir.isEmpty()) break;
             }
         }
 
-        QString translatorExe = ugBaseDir + "/STEP214UG/step214ug.exe";
-        if (!ugBaseDir.isEmpty() && QFile::exists(translatorExe)) {
-            traceWorkerLog("parsePRT: Found local NX installation at: " + ugBaseDir);
+        QString translatorExe = detectedUgBaseDir + "/STEP214UG/step214ug.exe";
+        if (!detectedUgBaseDir.isEmpty() && QFile::exists(translatorExe)) {
+            traceWorkerLog("parsePRT: Found local NX installation at: " + detectedUgBaseDir);
 
             // 构造磁盘持久化缓存目录 (使用标准系统 Temp 路径，规避 UWP 本地虚拟化与超长路径限制)
             QString cacheDir = QDir::tempPath() + "/3dmaster_prt_cache";
@@ -2289,10 +2322,20 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
             QString cachedStpPath = cacheDir + "/ug_" + hashKey + ".stp";
 
             bool stpReady = false;
+            // 校验已有缓存是否完整有效 (检查 ISO-10303-21 标头)
             if (QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
-                traceWorkerLog("parsePRT: Found existing cached STEP translation: " + cachedStpPath);
-                stpReady = true;
-            } else {
+                QFile checkStp(cachedStpPath);
+                if (checkStp.open(QIODevice::ReadOnly)) {
+                    QByteArray stpHead = checkStp.read(1024);
+                    checkStp.close();
+                    if (stpHead.contains("ISO-10303-21") || stpHead.contains("STEP")) {
+                        traceWorkerLog("parsePRT: Found existing valid cached STEP translation: " + cachedStpPath);
+                        stpReady = true;
+                    }
+                }
+            }
+
+            if (!stpReady) {
                 emit sigProgress(15, "检测到西门子 UG 模型，正在调用本机 NX 引擎静默转码...");
 
                 // 并发保护：转码过程使用独立 PID + 随机后缀的临时文件，消除同键并发写冲突
@@ -2304,33 +2347,46 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
 
                 QProcess proc;
                 QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-                env.insert("UGII_BASE_DIR", QDir::toNativeSeparators(ugBaseDir));
-                env.insert("STEP214UG_DIR", QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/"));
-                env.insert("ROSE_DB", QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/"));
-                env.insert("ROSE", QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/"));
-                env.insert("UGII_ROOT_DIR", QDir::toNativeSeparators(ugBaseDir + "/UGII/"));
+                env.insert("UGII_BASE_DIR", QDir::toNativeSeparators(detectedUgBaseDir));
+                env.insert("STEP214UG_DIR", QDir::toNativeSeparators(detectedUgBaseDir + "/STEP214UG/"));
+                env.insert("ROSE_DB", QDir::toNativeSeparators(detectedUgBaseDir + "/STEP214UG/"));
+                env.insert("ROSE", QDir::toNativeSeparators(detectedUgBaseDir + "/STEP214UG/"));
+                env.insert("UGII_ROOT_DIR", QDir::toNativeSeparators(detectedUgBaseDir + "/UGII/"));
 
-                // 强制确保 Siemens License 授权环境（环境变量优先 -> 注册表提取 -> 补丁 dat 保底）
-                if (!env.contains("UGS_LICENSE_SERVER") || env.value("UGS_LICENSE_SERVER").isEmpty()) {
-                    QString lic = qEnvironmentVariable("UGS_LICENSE_SERVER");
-                    if (lic.isEmpty() && !licFromReg.isEmpty()) {
-                        lic = licFromReg;
-                    }
-                    if (lic.isEmpty() && QFile::exists("C:/ProgramData/Siemens/siemens_SSQ.dat")) {
-                        lic = "C:\\ProgramData\\Siemens\\siemens_SSQ.dat";
-                    }
-                    if (!lic.isEmpty()) {
-                        env.insert("UGS_LICENSE_SERVER", lic);
-                    }
+                // 加固: 注入 ugii_env.dat 环境定义文件
+                QString envDat = detectedUgBaseDir + "/UGII/ugii_env.dat";
+                if (QFile::exists(envDat)) {
+                    env.insert("UGII_ENV_FILE", QDir::toNativeSeparators(envDat));
                 }
 
-                env.insert("PATH", QDir::toNativeSeparators(ugBaseDir + "/ugii") + ";" +
-                                   QDir::toNativeSeparators(ugBaseDir + "/STEP214UG") + ";" +
-                                   env.value("PATH"));
+                // 加固: 全版本 Siemens 许可证环境变量齐备（SPLM_LICENSE_SERVER 与 UGS_LICENSE_SERVER）
+                QString lic = qEnvironmentVariable("SPLM_LICENSE_SERVER");
+                if (lic.isEmpty()) lic = qEnvironmentVariable("UGS_LICENSE_SERVER");
+                if (lic.isEmpty()) lic = qEnvironmentVariable("UGII_LICENSE_FILE");
+                if (lic.isEmpty() && !detectedLic.isEmpty()) lic = detectedLic;
+                if (lic.isEmpty() && QFile::exists("C:/ProgramData/Siemens/siemens_SSQ.dat")) {
+                    lic = "C:\\ProgramData\\Siemens\\siemens_SSQ.dat";
+                }
+                if (!lic.isEmpty()) {
+                    env.insert("SPLM_LICENSE_SERVER", lic);
+                    env.insert("UGS_LICENSE_SERVER", lic);
+                    env.insert("UGII_LICENSE_FILE", lic);
+                }
+
+                // 加固: PATH 纳入 NXBIN (NX 11+ 必需)、ugii 与 STEP214UG
+                QString nxBinDir = detectedUgBaseDir + "/NXBIN";
+                QString ugiiDir = detectedUgBaseDir + "/ugii";
+                QString step214Dir = detectedUgBaseDir + "/STEP214UG";
+                QString extraPaths;
+                if (QDir(nxBinDir).exists()) extraPaths += QDir::toNativeSeparators(nxBinDir) + ";";
+                if (QDir(ugiiDir).exists()) extraPaths += QDir::toNativeSeparators(ugiiDir) + ";";
+                if (QDir(step214Dir).exists()) extraPaths += QDir::toNativeSeparators(step214Dir) + ";";
+                env.insert("PATH", extraPaths + env.value("PATH"));
+
                 proc.setProcessEnvironment(env);
                 proc.setWorkingDirectory(cacheDir);
 
-                QString defFile = QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/ugstep214.def");
+                QString defFile = QDir::toNativeSeparators(detectedUgBaseDir + "/STEP214UG/ugstep214.def");
                 QString nativeIn = QDir::toNativeSeparators(path);
                 QString nativeTempOut = QDir::toNativeSeparators(tempStpPath);
 
@@ -2350,9 +2406,11 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
 #endif
                 proc.start(translatorExe, args);
 
-                // 轮询等待进程执行完成，同时支持即时响应用户取消与超时控制 (60s)
+                // 加固: 轮询等待同时实时排空匿名管道缓冲，避免大量转码日志撑满管道导致子进程挂起死锁
                 int elapsedMs = 0;
                 const int timeoutMs = 60000;
+                QByteArray stdOutBytes;
+                QByteArray stdErrBytes;
                 while (proc.state() != QProcess::NotRunning && elapsedMs < timeoutMs) {
                     if (m_cancelRequested.load()) {
                         traceWorkerLog("parsePRT: User cancelled conversion, killing translator process.");
@@ -2362,6 +2420,8 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                         return false;
                     }
                     proc.waitForFinished(200);
+                    stdOutBytes.append(proc.readAllStandardOutput());
+                    stdErrBytes.append(proc.readAllStandardError());
                     elapsedMs += 200;
                 }
 
@@ -2372,8 +2432,11 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     QFile::remove(tempStpPath);
                 }
 
-                QString stdOut = QString::fromLocal8Bit(proc.readAllStandardOutput());
-                QString stdErr = QString::fromLocal8Bit(proc.readAllStandardError());
+                stdOutBytes.append(proc.readAllStandardOutput());
+                stdErrBytes.append(proc.readAllStandardError());
+
+                QString stdOut = QString::fromLocal8Bit(stdOutBytes);
+                QString stdErr = QString::fromLocal8Bit(stdErrBytes);
                 traceWorkerLog(QString("parsePRT: Translator finished with exitCode: %1, exitStatus: %2")
                                .arg(proc.exitCode()).arg(proc.exitStatus()));
                 if (!stdOut.isEmpty()) {
@@ -2383,22 +2446,50 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     traceWorkerLog("parsePRT: step214ug stdErr:\n" + stdErr.trimmed());
                 }
 
+                // 校验转码产物与 STEP 文件格式标头
+                bool tempValid = false;
                 if (proc.exitStatus() == QProcess::NormalExit && QFile::exists(tempStpPath) && QFileInfo(tempStpPath).size() > 0) {
-                    traceWorkerLog("parsePRT: Silent translation succeeded! Temp size: " + QString::number(QFileInfo(tempStpPath).size()));
-                    // 原子覆盖替换目标缓存文件
-                    if (QFile::exists(cachedStpPath)) {
-                        QFile::remove(cachedStpPath);
+                    QFile checkTemp(tempStpPath);
+                    if (checkTemp.open(QIODevice::ReadOnly)) {
+                        QByteArray stpHead = checkTemp.read(1024);
+                        checkTemp.close();
+                        if (stpHead.contains("ISO-10303-21") || stpHead.contains("STEP")) {
+                            tempValid = true;
+                        }
                     }
-                    if (QFile::rename(tempStpPath, cachedStpPath)) {
+                }
+
+                if (tempValid) {
+                    traceWorkerLog("parsePRT: Translation verified! Temp size: " + QString::number(QFileInfo(tempStpPath).size()));
+#ifdef Q_OS_WIN
+                    // 加固: Windows 原生 MoveFileExW 原子覆盖替换目标缓存文件
+                    std::wstring wTemp = QDir::toNativeSeparators(tempStpPath).toStdWString();
+                    std::wstring wDest = QDir::toNativeSeparators(cachedStpPath).toStdWString();
+                    if (MoveFileExW(wTemp.c_str(), wDest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
                         stpReady = true;
                     } else if (QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
-                        // 并发竞争场景：若重命名被占先但目标已就绪，复用目标文件并清理临时文件
                         QFile::remove(tempStpPath);
                         stpReady = true;
+                    } else {
+                        // 极端改名失败保底直接复用临时文件
+                        cachedStpPath = tempStpPath;
+                        stpReady = true;
                     }
+#else
+                    if (QFile::exists(cachedStpPath)) QFile::remove(cachedStpPath);
+                    if (QFile::rename(tempStpPath, cachedStpPath)) {
+                        stpReady = true;
+                    } else if (QFile::exists(cachedStpPath)) {
+                        QFile::remove(tempStpPath);
+                        stpReady = true;
+                    } else {
+                        cachedStpPath = tempStpPath;
+                        stpReady = true;
+                    }
+#endif
                 } else {
                     QFile::remove(tempStpPath);
-                    traceWorkerLog(QString("parsePRT: Translation failed! Temp output missing or empty."));
+                    traceWorkerLog("parsePRT: Translation failed or output invalid!");
                 }
             }
 
@@ -2416,9 +2507,8 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
         }
     }
 
-    // 检查本机是否安装了西门子 UG/NX 环境 (环境变量 UGII_BASE_DIR)
-    QString ugBaseDir = qEnvironmentVariable("UGII_BASE_DIR");
-    bool hasLocalNX = (!ugBaseDir.isEmpty() && QDir(ugBaseDir).exists());
+    // 降级引导卡片 (使用已探测到的 detectedUgBaseDir)
+    bool hasLocalNX = (!detectedUgBaseDir.isEmpty() && QDir(detectedUgBaseDir).exists());
 
     // 构造专业的 CAD 专有格式引导提示 (降级方案)
     QString hintMsg;
@@ -2430,7 +2520,7 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                 "💡 建议方案：\n"
                 "1. 本地静默转码未能导出该模型（可能是装配引用缺失或许可证限制）\n"
                 "2. 建议在 UG/NX 中手动导出为 STEP (.stp) 或 JT 格式，即可享受秒级无损 3D 预览与装配树交互"
-            ).arg(cadVendor, ugBaseDir);
+            ).arg(cadVendor, detectedUgBaseDir);
         } else {
             hintMsg = QString(
                 "检测到【%1】专有零件格式 (.prt)\n"
