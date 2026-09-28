@@ -9,6 +9,9 @@
 #include <QDateTime>
 #include <QStandardPaths>
 #include <QProcess>
+#include <QSettings>
+#include <QRandomGenerator>
+#include <QCoreApplication>
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -2187,12 +2190,10 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
 
     if (isOle2) {
         // 现代所有主流版本的 Siemens NX / UG PRT 文件均采用 OLE2 复合文档封装
-        // 内部包含 UgAttributes、UGII、NX_、Siemens 等属性流或节点
-        if (header.contains("UgAttributes") || header.contains("UGII") || header.contains("NX") ||
-            header.contains("UG") || header.contains("OM_root_object") || header.contains("Siemens")) {
-            isSiemensNX = true;
-        } else {
-            // 在 CAD 领域，.prt 后缀且采用 OLE2 格式的文件均属于西门子 NX/UG 体系 (Creo 为明文ASCII，SolidWorks 为 .sldprt)
+        // 严格匹配专有属性流或根对象节点特征，杜绝任意 OLE 复合文档（如旧版 Office）与短字母误判
+        if (header.contains("UgAttributes") || header.contains("UGII") ||
+            header.contains("OM_root_object") || header.contains("Siemens PLM") ||
+            header.contains("UG_PART") || header.contains("NX_PART")) {
             isSiemensNX = true;
         }
     } else if (header.contains("UGII") || header.contains("hp7151") || header.contains("Sparc") || header.contains("OM_root_object")) {
@@ -2209,24 +2210,62 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
     // 如果识别为西门子 UG/NX，尝试调用本机安装的 NX 静默转码引擎 (Local Headless Converter Bridge)
     if (isSiemensNX) {
         QString ugBaseDir = qEnvironmentVariable("UGII_BASE_DIR");
+        QString licFromReg;
+
+#ifdef Q_OS_WIN
+        // 1. 优先扫描 Windows 注册表中的真实 NX/Unigraphics 安装记录（支持任意自定义盘符与连续版本）
         if (ugBaseDir.isEmpty() || !QDir(ugBaseDir).exists()) {
-            const QStringList candidateDirs = {
-                "D:/Program Files/Siemens/NX 10.0",
-                "C:/Program Files/Siemens/NX 10.0",
-                "D:/Program Files/Siemens/NX 12.0",
-                "C:/Program Files/Siemens/NX 12.0",
-                "D:/Program Files/Siemens/NX",
-                "C:/Program Files/Siemens/NX",
-                "D:/Siemens/NX 10.0",
-                "C:/Siemens/NX 10.0",
-                "D:/Program Files/Siemens/NX2406",
-                "C:/Program Files/Siemens/NX2406"
+            const QStringList regRoots = {
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Unigraphics Solutions\\NX",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Siemens\\NX",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Unigraphics Solutions\\NX",
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Siemens\\NX"
             };
-            for (const QString& cand : candidateDirs) {
-                if (QDir(cand).exists() && QFile::exists(cand + "/STEP214UG/step214ug.exe")) {
-                    ugBaseDir = cand;
-                    break;
+            for (const QString& root : regRoots) {
+                QSettings settings(root, QSettings::NativeFormat);
+                const QStringList versions = settings.childGroups();
+                for (const QString& ver : versions) {
+                    settings.beginGroup(ver);
+                    QString dir = settings.value("UGII_BASE_DIR").toString();
+                    if (dir.isEmpty()) dir = settings.value("INSTALLDIR").toString();
+                    if (licFromReg.isEmpty()) licFromReg = settings.value("LICENSESERVER").toString();
+                    settings.endGroup();
+
+                    if (!dir.isEmpty()) {
+                        dir = QDir::fromNativeSeparators(dir);
+                        while (dir.endsWith('/')) dir.chop(1);
+                        if (QDir(dir).exists() && QFile::exists(dir + "/STEP214UG/step214ug.exe")) {
+                            ugBaseDir = dir;
+                            break;
+                        }
+                    }
                 }
+                if (!ugBaseDir.isEmpty()) break;
+            }
+        }
+#endif
+
+        // 2. 多盘符常见安装目录扫描保底 (覆盖主流 NX 8.5 到 NX 2412 各版本)
+        if (ugBaseDir.isEmpty() || !QDir(ugBaseDir).exists()) {
+            const QStringList drives = { "C:", "D:", "E:", "F:" };
+            const QStringList subPaths = {
+                "/Program Files/Siemens/NX 10.0", "/Program Files/Siemens/NX 11.0",
+                "/Program Files/Siemens/NX 12.0", "/Program Files/Siemens/NX",
+                "/Program Files/Siemens/NX2406",  "/Program Files/Siemens/NX2412",
+                "/Program Files/Siemens/NX 2312", "/Program Files/Siemens/NX 2212",
+                "/Program Files/Siemens/NX 2007", "/Program Files/Siemens/NX 1980",
+                "/Siemens/NX 10.0",               "/Siemens/NX 12.0",
+                "/Siemens/NX",                    "/Siemens/NX2406"
+            };
+            for (const QString& drive : drives) {
+                for (const QString& sub : subPaths) {
+                    QString cand = drive + sub;
+                    if (QDir(cand).exists() && QFile::exists(cand + "/STEP214UG/step214ug.exe")) {
+                        ugBaseDir = cand;
+                        break;
+                    }
+                }
+                if (!ugBaseDir.isEmpty()) break;
             }
         }
 
@@ -2256,6 +2295,13 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
             } else {
                 emit sigProgress(15, "检测到西门子 UG 模型，正在调用本机 NX 引擎静默转码...");
 
+                // 并发保护：转码过程使用独立 PID + 随机后缀的临时文件，消除同键并发写冲突
+                quint32 rndVal = QRandomGenerator::global()->generate();
+                QString tempStpPath = QString("%1/ug_%2_%3_%4.tmp")
+                                          .arg(cacheDir, hashKey)
+                                          .arg(QCoreApplication::applicationPid())
+                                          .arg(rndVal);
+
                 QProcess proc;
                 QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
                 env.insert("UGII_BASE_DIR", QDir::toNativeSeparators(ugBaseDir));
@@ -2264,9 +2310,12 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                 env.insert("ROSE", QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/"));
                 env.insert("UGII_ROOT_DIR", QDir::toNativeSeparators(ugBaseDir + "/UGII/"));
 
-                // 强制确保 Siemens License 授权环境
+                // 强制确保 Siemens License 授权环境（环境变量优先 -> 注册表提取 -> 补丁 dat 保底）
                 if (!env.contains("UGS_LICENSE_SERVER") || env.value("UGS_LICENSE_SERVER").isEmpty()) {
                     QString lic = qEnvironmentVariable("UGS_LICENSE_SERVER");
+                    if (lic.isEmpty() && !licFromReg.isEmpty()) {
+                        lic = licFromReg;
+                    }
                     if (lic.isEmpty() && QFile::exists("C:/ProgramData/Siemens/siemens_SSQ.dat")) {
                         lic = "C:\\ProgramData\\Siemens\\siemens_SSQ.dat";
                     }
@@ -2282,12 +2331,12 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                 proc.setWorkingDirectory(cacheDir);
 
                 QString defFile = QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/ugstep214.def");
-                QString nativeOut = QDir::toNativeSeparators(cachedStpPath);
                 QString nativeIn = QDir::toNativeSeparators(path);
+                QString nativeTempOut = QDir::toNativeSeparators(tempStpPath);
 
                 QStringList args;
                 args << nativeIn;
-                args << ("o=" + nativeOut);
+                args << ("o=" + nativeTempOut);
                 if (QFile::exists(defFile)) {
                     args << ("d=" + defFile);
                 }
@@ -2309,6 +2358,7 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                         traceWorkerLog("parsePRT: User cancelled conversion, killing translator process.");
                         proc.kill();
                         proc.waitForFinished(1000);
+                        QFile::remove(tempStpPath);
                         return false;
                     }
                     proc.waitForFinished(200);
@@ -2319,11 +2369,13 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     traceWorkerLog("parsePRT: Translator process timed out after 60s, terminating.");
                     proc.kill();
                     proc.waitForFinished(1000);
+                    QFile::remove(tempStpPath);
                 }
 
                 QString stdOut = QString::fromLocal8Bit(proc.readAllStandardOutput());
                 QString stdErr = QString::fromLocal8Bit(proc.readAllStandardError());
-                traceWorkerLog(QString("parsePRT: Translator finished with exitCode: %1").arg(proc.exitCode()));
+                traceWorkerLog(QString("parsePRT: Translator finished with exitCode: %1, exitStatus: %2")
+                               .arg(proc.exitCode()).arg(proc.exitStatus()));
                 if (!stdOut.isEmpty()) {
                     traceWorkerLog("parsePRT: step214ug stdOut:\n" + stdOut.trimmed());
                 }
@@ -2331,13 +2383,22 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     traceWorkerLog("parsePRT: step214ug stdErr:\n" + stdErr.trimmed());
                 }
 
-                if (proc.exitStatus() == QProcess::NormalExit && QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
-                    traceWorkerLog("parsePRT: Silent translation succeeded! Generated file size: " + QString::number(QFileInfo(cachedStpPath).size()));
-                    stpReady = true;
+                if (proc.exitStatus() == QProcess::NormalExit && QFile::exists(tempStpPath) && QFileInfo(tempStpPath).size() > 0) {
+                    traceWorkerLog("parsePRT: Silent translation succeeded! Temp size: " + QString::number(QFileInfo(tempStpPath).size()));
+                    // 原子覆盖替换目标缓存文件
+                    if (QFile::exists(cachedStpPath)) {
+                        QFile::remove(cachedStpPath);
+                    }
+                    if (QFile::rename(tempStpPath, cachedStpPath)) {
+                        stpReady = true;
+                    } else if (QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
+                        // 并发竞争场景：若重命名被占先但目标已就绪，复用目标文件并清理临时文件
+                        QFile::remove(tempStpPath);
+                        stpReady = true;
+                    }
                 } else {
-                    traceWorkerLog(QString("parsePRT: Translation failed or output missing! Expected: %1 (exists: %2)")
-                                   .arg(cachedStpPath)
-                                   .arg(QFile::exists(cachedStpPath)));
+                    QFile::remove(tempStpPath);
+                    traceWorkerLog(QString("parsePRT: Translation failed! Temp output missing or empty."));
                 }
             }
 
