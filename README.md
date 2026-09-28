@@ -12,12 +12,16 @@
 ## 🌟 核心特性 (Key Features)
 
 - ⚡ **空格秒级极速预览**：基于 Win32 原生嵌入（HwndHost）与独立守护进程架构，与 QuickLook 宿主完美融合，秒开模型不卡顿。
-- 📦 **100% 绿色自包含（Self-Contained）**：完整打包官方 VC++ 运行库闭包、TBB 剖分库、Direct3D/软件 OpenGL 回退驱动与 Qt 环境，**换到任何全新的纯净 Windows 电脑上解压即用**，绝不白屏。
+- 📦 **100% 绿色自包含与换机保障 (Self-Contained & Portable)**：完整内置微软官方 VC++ 运行库闭包（MSVC CRT 2015-2022）、TBB 剖分库、Direct3D/软件 OpenGL 回退驱动与 Qt 渲染环境，**无论复制到任何全新、纯净的 Windows 10/11 电脑上均可即插即用**，绝不报缺失 DLL 错误，零白屏。
 - 🛠️ **全格式工业支持**：
   - **STEP / STP** (`.step`, `.stp`)：完整装配树结构、材质固有色渲染与拓扑实体解析。
   - **IGES / IGS** (`.iges`, `.igs`)：工业曲线曲面高保真缝合与几何特征呈现。
   - **现代 3D 网格**：**glTF / GLB** (`.gltf`, `.glb`)、**3MF** (`.3mf`，支持多色与原型实例化)、**STL** (`.stl`)、**OBJ** (`.obj`)、**PLY** (`.ply`)、**OFF** (`.off`)。
-  - **UG/NX PRT** (`.prt`)：内置智能二进制嗅探。若本机装有 UG/NX，自动静默后台转码并启用 SHA-256 磁盘二级缓存（再次打开秒级加载）；若未安装则提供专业 CAD 导出导向卡片。
+  - **西门子 UG/NX PRT** (`.prt`)：
+    - **全自动多路径注册表嗅探**：深度遍历扫描系统注册表（涵盖 `Siemens\NX`、`Siemens PLM Software`、`Unigraphics Solutions` 及 WOW6432Node 节点），无论安装在何盘符均可自适应定位。
+    - **智能多版本择优**：自动比对本机安装的所有 NX 版本并优先调起最新版本内核；智能分类注入许可服务器环境（`SPLM_LICENSE_SERVER` / `UGS_LICENSE_SERVER`）。
+    - **工业级自愈与缓存**：严格校验 `ISO-10303-21` 头部合法性，自动剔除损坏缓存；采用 `MoveFileExW` 原子安全落盘与子进程实时管道抽吸，杜绝死锁与文件冲突。
+    - **零崩溃优雅降级**：目标机若未安装 UG，或本机旧版 UG 遇到高版本 `SPLMSSTR` 格式，在 0.05 秒内安全拦截并展示结构化指引卡片，QuickLook 宿主进程绝不假死或崩溃。
 - 📐 **专业 CAD 交互视口**：
   - 黑色 CAD 特征棱线（CAD Edges）清晰勾勒。
   - 动态三向截面剖切（Dynamic Section View），支持滑块平滑控制内部构造。
