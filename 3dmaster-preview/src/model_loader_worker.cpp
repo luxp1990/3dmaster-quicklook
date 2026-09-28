@@ -2260,8 +2260,8 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     settings.beginGroup(ver);
                     QString dir = settings.value("UGII_BASE_DIR").toString();
                     if (dir.isEmpty()) dir = settings.value("INSTALLDIR").toString();
-                    if (detectedLic.isEmpty()) detectedLic = settings.value("SPLM_LICENSE_SERVER").toString();
-                    if (detectedLic.isEmpty()) detectedLic = settings.value("LICENSESERVER").toString();
+                    QString candLic = settings.value("SPLM_LICENSE_SERVER").toString();
+                    if (candLic.isEmpty()) candLic = settings.value("LICENSESERVER").toString();
                     settings.endGroup();
 
                     if (!dir.isEmpty()) {
@@ -2269,6 +2269,9 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                         while (dir.endsWith('/')) dir.chop(1);
                         if (QDir(dir).exists() && QFile::exists(dir + "/STEP214UG/step214ug.exe")) {
                             detectedUgBaseDir = dir;
+                            if (detectedLic.isEmpty() && !candLic.isEmpty()) {
+                                detectedLic = candLic;
+                            }
                             break;
                         }
                     }
@@ -2368,9 +2371,13 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     lic = "C:\\ProgramData\\Siemens\\siemens_SSQ.dat";
                 }
                 if (!lic.isEmpty()) {
-                    env.insert("SPLM_LICENSE_SERVER", lic);
-                    env.insert("UGS_LICENSE_SERVER", lic);
-                    env.insert("UGII_LICENSE_FILE", lic);
+                    if (lic.contains('@')) {
+                        env.insert("SPLM_LICENSE_SERVER", lic);
+                        env.insert("UGS_LICENSE_SERVER", lic);
+                    } else {
+                        env.insert("UGII_LICENSE_FILE", lic);
+                        env.insert("SPLM_LICENSE_SERVER", lic);
+                    }
                 }
 
                 // 加固: PATH 纳入 NXBIN (NX 11+ 必需)、ugii 与 STEP214UG
@@ -2446,14 +2453,14 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     traceWorkerLog("parsePRT: step214ug stdErr:\n" + stdErr.trimmed());
                 }
 
-                // 校验转码产物与 STEP 文件格式标头
+                // 校验转码产物与 STEP 文件格式标头（严格校验 ISO-10303-21 工业标准头）
                 bool tempValid = false;
                 if (proc.exitStatus() == QProcess::NormalExit && QFile::exists(tempStpPath) && QFileInfo(tempStpPath).size() > 0) {
                     QFile checkTemp(tempStpPath);
                     if (checkTemp.open(QIODevice::ReadOnly)) {
                         QByteArray stpHead = checkTemp.read(1024);
                         checkTemp.close();
-                        if (stpHead.contains("ISO-10303-21") || stpHead.contains("STEP")) {
+                        if (stpHead.contains("ISO-10303-21")) {
                             tempValid = true;
                         }
                     }
@@ -2467,13 +2474,14 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     std::wstring wDest = QDir::toNativeSeparators(cachedStpPath).toStdWString();
                     if (MoveFileExW(wTemp.c_str(), wDest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
                         stpReady = true;
-                    } else if (QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
-                        QFile::remove(tempStpPath);
-                        stpReady = true;
                     } else {
-                        // 极端改名失败保底直接复用临时文件
-                        cachedStpPath = tempStpPath;
-                        stpReady = true;
+                        // 若改名失败且目标不存在，临时文件直接兜底作为本轮就绪模型
+                        if (!QFile::exists(cachedStpPath)) {
+                            cachedStpPath = tempStpPath;
+                            stpReady = true;
+                        } else {
+                            QFile::remove(tempStpPath);
+                        }
                     }
 #else
                     if (QFile::exists(cachedStpPath)) QFile::remove(cachedStpPath);
@@ -2502,6 +2510,10 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     outModel->format = "UG/NX PRT";
                     traceWorkerLog("parsePRT: Successfully loaded UG model via headless bridge: " + path);
                     return true;
+                } else {
+                    // 若 parseSTEP 失败，主动清理损坏的缓存，避免后续持续复用坏文件
+                    traceWorkerLog("parsePRT: parseSTEP failed on generated STEP file, purging cached file: " + cachedStpPath);
+                    QFile::remove(cachedStpPath);
                 }
             }
         }
