@@ -2234,21 +2234,20 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
         if (!ugBaseDir.isEmpty() && QFile::exists(translatorExe)) {
             traceWorkerLog("parsePRT: Found local NX installation at: " + ugBaseDir);
 
-            // 构造磁盘持久化缓存目录
-            QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/3dmaster/prt_cache";
-            if (cacheDir.isEmpty()) {
-                cacheDir = QDir::tempPath() + "/3dmaster_prt_cache";
-            }
+            // 构造磁盘持久化缓存目录 (使用标准系统 Temp 路径，规避 UWP 本地虚拟化与超长路径限制)
+            QString cacheDir = QDir::tempPath() + "/3dmaster_prt_cache";
             QDir().mkpath(cacheDir);
 
-            // 基于文件路径、尺寸与修改时间生成唯一特征哈希
+            // 基于文件完整绝对路径、尺寸与修改时间生成唯一特征哈希
             QFileInfo fi(path);
+            QString absPath = fi.absoluteFilePath();
             QString keyStr = QString("%1_%2_%3")
-                                 .arg(fi.canonicalFilePath())
+                                 .arg(absPath)
                                  .arg(fi.size())
                                  .arg(fi.lastModified().toMSecsSinceEpoch());
             QString hashKey = QString::fromLatin1(QCryptographicHash::hash(keyStr.toUtf8(), QCryptographicHash::Sha256).toHex().left(16));
-            QString cachedStpPath = cacheDir + "/" + fi.completeBaseName() + "_" + hashKey + ".stp";
+            // 采用纯 ASCII 安全文件名，杜绝 ANSI 命令行、特殊符号与旧版转换器编码乱码
+            QString cachedStpPath = cacheDir + "/ug_" + hashKey + ".stp";
 
             bool stpReady = false;
             if (QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
@@ -2256,7 +2255,6 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                 stpReady = true;
             } else {
                 emit sigProgress(15, "检测到西门子 UG 模型，正在调用本机 NX 引擎静默转码...");
-                traceWorkerLog("parsePRT: Launching silent translation via step214ug.exe...");
 
                 QProcess proc;
                 QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -2264,6 +2262,19 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                 env.insert("STEP214UG_DIR", QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/"));
                 env.insert("ROSE_DB", QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/"));
                 env.insert("ROSE", QDir::toNativeSeparators(ugBaseDir + "/STEP214UG/"));
+                env.insert("UGII_ROOT_DIR", QDir::toNativeSeparators(ugBaseDir + "/UGII/"));
+
+                // 强制确保 Siemens License 授权环境
+                if (!env.contains("UGS_LICENSE_SERVER") || env.value("UGS_LICENSE_SERVER").isEmpty()) {
+                    QString lic = qEnvironmentVariable("UGS_LICENSE_SERVER");
+                    if (lic.isEmpty() && QFile::exists("C:/ProgramData/Siemens/siemens_SSQ.dat")) {
+                        lic = "C:\\ProgramData\\Siemens\\siemens_SSQ.dat";
+                    }
+                    if (!lic.isEmpty()) {
+                        env.insert("UGS_LICENSE_SERVER", lic);
+                    }
+                }
+
                 env.insert("PATH", QDir::toNativeSeparators(ugBaseDir + "/ugii") + ";" +
                                    QDir::toNativeSeparators(ugBaseDir + "/STEP214UG") + ";" +
                                    env.value("PATH"));
@@ -2280,6 +2291,8 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                 if (QFile::exists(defFile)) {
                     args << ("d=" + defFile);
                 }
+
+                traceWorkerLog("parsePRT: Launching command: " + translatorExe + " " + args.join(" "));
 
 #ifdef Q_OS_WIN
                 proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
@@ -2308,13 +2321,23 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     proc.waitForFinished(1000);
                 }
 
+                QString stdOut = QString::fromLocal8Bit(proc.readAllStandardOutput());
+                QString stdErr = QString::fromLocal8Bit(proc.readAllStandardError());
+                traceWorkerLog(QString("parsePRT: Translator finished with exitCode: %1").arg(proc.exitCode()));
+                if (!stdOut.isEmpty()) {
+                    traceWorkerLog("parsePRT: step214ug stdOut:\n" + stdOut.trimmed());
+                }
+                if (!stdErr.isEmpty()) {
+                    traceWorkerLog("parsePRT: step214ug stdErr:\n" + stdErr.trimmed());
+                }
+
                 if (proc.exitStatus() == QProcess::NormalExit && QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
                     traceWorkerLog("parsePRT: Silent translation succeeded! Generated file size: " + QString::number(QFileInfo(cachedStpPath).size()));
                     stpReady = true;
                 } else {
-                    traceWorkerLog(QString("parsePRT: Translator failed with exitCode: %1. Error: %2")
-                                   .arg(proc.exitCode())
-                                   .arg(QString::fromLocal8Bit(proc.readAllStandardError())));
+                    traceWorkerLog(QString("parsePRT: Translation failed or output missing! Expected: %1 (exists: %2)")
+                                   .arg(cachedStpPath)
+                                   .arg(QFile::exists(cachedStpPath)));
                 }
             }
 
