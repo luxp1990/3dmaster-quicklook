@@ -2173,14 +2173,29 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
         return false;
     }
 
-    QByteArray header = file.read(512);
+    // 读取前 128KB 数据，以充分嗅探微软复合文档 (OLE2/CFBF) 目录扇区与传统 Unix/RISC 头部
+    QByteArray header = file.read(131072);
     file.close();
 
     // 格式识别魔数嗅探
     bool isSiemensNX = false;
     bool isCreo = false;
 
-    if (header.contains("UGII") || header.contains("hp7151") || header.contains("Sparc") || header.contains("OM_root_object")) {
+    // 微软 OLE2 复合二进制文件特征魔数 (D0 CF 11 E0 A1 B1 1A E1)
+    const char ole2Magic[] = "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1";
+    const bool isOle2 = (header.size() >= 8 && memcmp(header.constData(), ole2Magic, 8) == 0);
+
+    if (isOle2) {
+        // 现代所有主流版本的 Siemens NX / UG PRT 文件均采用 OLE2 复合文档封装
+        // 内部包含 UgAttributes、UGII、NX_、Siemens 等属性流或节点
+        if (header.contains("UgAttributes") || header.contains("UGII") || header.contains("NX") ||
+            header.contains("UG") || header.contains("OM_root_object") || header.contains("Siemens")) {
+            isSiemensNX = true;
+        } else {
+            // 在 CAD 领域，.prt 后缀且采用 OLE2 格式的文件均属于西门子 NX/UG 体系 (Creo 为明文ASCII，SolidWorks 为 .sldprt)
+            isSiemensNX = true;
+        }
+    } else if (header.contains("UGII") || header.contains("hp7151") || header.contains("Sparc") || header.contains("OM_root_object")) {
         isSiemensNX = true;
     } else if (header.contains("#UGC:") || header.startsWith("#PRT") || header.contains("Creo") || header.contains("Pro/ENGINEER")) {
         isCreo = true;
@@ -2266,15 +2281,31 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     args << ("d=" + defFile);
                 }
 
+#ifdef Q_OS_WIN
+                proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
+                    args->flags |= CREATE_NO_WINDOW;
+                });
+#endif
                 proc.start(translatorExe, args);
 
-                // 轮询等待完成，支持即时响应用户取消
-                while (!proc.waitForFinished(300)) {
+                // 轮询等待进程执行完成，同时支持即时响应用户取消与超时控制 (60s)
+                int elapsedMs = 0;
+                const int timeoutMs = 60000;
+                while (proc.state() != QProcess::NotRunning && elapsedMs < timeoutMs) {
                     if (m_cancelRequested.load()) {
                         traceWorkerLog("parsePRT: User cancelled conversion, killing translator process.");
                         proc.kill();
+                        proc.waitForFinished(1000);
                         return false;
                     }
+                    proc.waitForFinished(200);
+                    elapsedMs += 200;
+                }
+
+                if (proc.state() != QProcess::NotRunning) {
+                    traceWorkerLog("parsePRT: Translator process timed out after 60s, terminating.");
+                    proc.kill();
+                    proc.waitForFinished(1000);
                 }
 
                 if (proc.exitStatus() == QProcess::NormalExit && QFile::exists(cachedStpPath) && QFileInfo(cachedStpPath).size() > 0) {
