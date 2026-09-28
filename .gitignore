@@ -1,0 +1,34 @@
+# ========================================
+# 3dmaster-quicklook .gitignore
+# ========================================
+
+# === 构建中间产物与二进制输出 ===
+build/
+bin/
+obj/
+*.dll
+*.exe
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.obj
+*.o
+*.a
+
+# === 打包产物与分发目录 (Release Assets) ===
+dist/
+*.qlplugin
+*.zip
+
+# === 编辑器与 IDE 临时配置 ===
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# === 日志与临时文件 ===
+*.log
+*.tmp
+*.bak
