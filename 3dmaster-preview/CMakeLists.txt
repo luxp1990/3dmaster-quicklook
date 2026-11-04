@@ -17,8 +17,6 @@ if(NOT OCCT_DIR)
         set(OCCT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../occt")
     elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../3dmaster/occt")
         set(OCCT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../3dmaster/occt")
-    elseif(EXISTS "D:/seer/3dmaster/occt")
-        set(OCCT_DIR "D:/seer/3dmaster/occt")
     endif()
 endif()
 
