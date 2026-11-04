@@ -379,6 +379,9 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return false;
 
+    qint64 fileSize = file.size();
+    if (fileSize < 84) return false;
+
     QByteArray header = file.read(80);
     if (header.size() < 80) return false;
 
@@ -387,7 +390,7 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
     mesh.diffuseColor = QVector3D(0.40f, 0.70f, 0.95f); // 工业蓝色默认材质
 
     uint32_t triangleCount = 0;
-    file.read(reinterpret_cast<char*>(&triangleCount), 4);
+    if (file.read(reinterpret_cast<char*>(&triangleCount), 4) != 4) return false;
 
     // 空间哈希顶点焊接与曲面平滑结构体定义 (0.001mm = 1微米量化公差)
     struct PosKey {
@@ -415,43 +418,55 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
     std::unordered_map<PosKey, std::vector<VertexCandidate>, PosKeyHash> posMap;
     std::vector<QVector3D> accumulatedNormals;
 
+    auto isValidCoord = [](const QVector3D& v) {
+        return !std::isnan(v.x()) && !std::isnan(v.y()) && !std::isnan(v.z()) &&
+               !std::isinf(v.x()) && !std::isinf(v.y()) && !std::isinf(v.z());
+    };
+
     auto addVertex = [&](const QVector3D& pos, const QVector3D& normal, const QVector4D& col, bool hasColor) {
+        if (!isValidCoord(pos)) return;
+        QVector3D safeNorm = isValidCoord(normal) ? normal : QVector3D(0, 1, 0);
+
         PosKey key = { std::llround(pos.x() * 1000.0), std::llround(pos.y() * 1000.0), std::llround(pos.z() * 1000.0) };
         auto& cands = posMap[key];
         int matchedIdx = -1;
         for (const auto& cand : cands) {
             if (cand.hasColor == hasColor && (!hasColor || cand.color == col)) {
                 // 若法线夹角 <= 45° (cos 45° ≈ 0.707f)，判定为同一光滑曲面并焊接法线
-                if (QVector3D::dotProduct(cand.refNormal, normal) >= 0.707f) {
+                if (QVector3D::dotProduct(cand.refNormal, safeNorm) >= 0.707f) {
                     matchedIdx = static_cast<int>(cand.vertexIndex);
                     break;
                 }
             }
         }
-        if (matchedIdx >= 0) {
-            accumulatedNormals[matchedIdx] += normal;
+        if (matchedIdx >= 0 && matchedIdx < static_cast<int>(accumulatedNormals.size())) {
+            accumulatedNormals[matchedIdx] += safeNorm;
             mesh.indices.push_back(static_cast<uint32_t>(matchedIdx));
         } else {
             uint32_t newIdx = static_cast<uint32_t>(mesh.vertices.size());
-            Vertex vert(pos, normal);
+            Vertex vert(pos, safeNorm);
             if (hasColor) {
                 vert.color = col;
                 mesh.hasVertexColors = true;
             }
             mesh.vertices.push_back(vert);
-            accumulatedNormals.push_back(normal);
-            cands.push_back({ newIdx, normal, col, hasColor });
+            accumulatedNormals.push_back(safeNorm);
+            cands.push_back({ newIdx, safeNorm, col, hasColor });
             mesh.indices.push_back(newIdx);
         }
     };
 
     qint64 expectedSize = 84 + static_cast<qint64>(triangleCount) * 50;
-    if (file.size() == expectedSize) {
+    // 防御整型溢出及异常大 triangleCount (最大限制 50,000,000 面)
+    bool isBinary = (fileSize == expectedSize && triangleCount > 0 && triangleCount <= 50000000);
+
+    if (isBinary) {
         // 二进制 STL
-        mesh.vertices.reserve(triangleCount / 2);
-        mesh.indices.reserve(triangleCount * 3);
-        posMap.reserve(triangleCount / 2);
-        accumulatedNormals.reserve(triangleCount / 2);
+        size_t reserveCount = std::min(triangleCount / 2, 5000000u);
+        mesh.vertices.reserve(reserveCount);
+        mesh.indices.reserve(std::min(triangleCount * 3, 30000000u));
+        posMap.reserve(reserveCount);
+        accumulatedNormals.reserve(reserveCount);
 
         const int chunkSize = 5000;
         QByteArray chunk;
@@ -463,7 +478,12 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
 
             uint32_t currentChunk = std::min(static_cast<uint32_t>(chunkSize), triangleCount - readCount);
             qint64 bytesRead = file.read(chunk.data(), currentChunk * 50);
-            if (bytesRead < currentChunk * 50) break;
+            if (bytesRead < static_cast<qint64>(currentChunk * 50)) {
+                // 文件发生意外截断，安全处理已有完整读取部分
+                uint32_t actualFullTriangles = static_cast<uint32_t>(std::max<qint64>(0, bytesRead) / 50);
+                currentChunk = actualFullTriangles;
+                if (currentChunk == 0) break;
+            }
 
             const char* ptr = chunk.constData();
             for (uint32_t i = 0; i < currentChunk; ++i) {
@@ -482,9 +502,9 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
                 QVector3D p1(v1x, v1y, v1z);
                 QVector3D p2(v2x, v2y, v2z);
 
-                if (normal.isNull() || normal.lengthSquared() < 1e-6f) {
+                if (normal.isNull() || normal.lengthSquared() < 1e-6f || !isValidCoord(normal)) {
                     normal = QVector3D::crossProduct(p1 - p0, p2 - p0).normalized();
-                    if (normal.isNull()) normal = QVector3D(0, 1, 0);
+                    if (normal.isNull() || !isValidCoord(normal)) normal = QVector3D(0, 1, 0);
                 }
 
                 // 2 字节属性字节 (VisCAM/Magics STL 颜色扩展识别)
@@ -508,8 +528,9 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
             }
 
             readCount += currentChunk;
-            int pct = 10 + static_cast<int>(80.0 * readCount / triangleCount);
+            int pct = 10 + static_cast<int>(80.0 * readCount / std::max(1u, triangleCount));
             emit sigProgress(pct, QString("已解析 %1 / %2 面片...").arg(readCount).arg(triangleCount));
+            if (bytesRead < static_cast<qint64>(chunkSize * 50)) break;
         }
     } else {
         // ASCII STL
@@ -525,41 +546,61 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
                 emit sigProgress(30, "正在流式解析 ASCII STL...");
             }
             QString line = in.readLine().trimmed();
+            if (line.isEmpty()) continue;
+
             if (line.startsWith("facet normal", Qt::CaseInsensitive)) {
                 auto parts = line.split(' ', Qt::SkipEmptyParts);
                 if (parts.size() >= 5) {
-                    curNormal = QVector3D(parts[2].toFloat(), parts[3].toFloat(), parts[4].toFloat());
+                    bool okX = false, okY = false, okZ = false;
+                    float nx = parts[2].toFloat(&okX);
+                    float ny = parts[3].toFloat(&okY);
+                    float nz = parts[4].toFloat(&okZ);
+                    if (okX && okY && okZ) {
+                        curNormal = QVector3D(nx, ny, nz);
+                    }
                 }
                 triVerts.clear();
             } else if (line.startsWith("vertex", Qt::CaseInsensitive)) {
                 auto parts = line.split(' ', Qt::SkipEmptyParts);
                 if (parts.size() >= 4) {
-                    triVerts.push_back(QVector3D(parts[1].toFloat(), parts[2].toFloat(), parts[3].toFloat()));
+                    bool okX = false, okY = false, okZ = false;
+                    float vx = parts[1].toFloat(&okX);
+                    float vy = parts[2].toFloat(&okY);
+                    float vz = parts[3].toFloat(&okZ);
+                    if (okX && okY && okZ) {
+                        triVerts.push_back(QVector3D(vx, vy, vz));
+                    }
                 }
             } else if (line.startsWith("endfacet", Qt::CaseInsensitive)) {
                 if (triVerts.size() == 3) {
-                    if (curNormal.isNull() || curNormal.lengthSquared() < 1e-6f) {
+                    if (curNormal.isNull() || curNormal.lengthSquared() < 1e-6f || !isValidCoord(curNormal)) {
                         curNormal = QVector3D::crossProduct(triVerts[1] - triVerts[0], triVerts[2] - triVerts[0]).normalized();
-                        if (curNormal.isNull()) curNormal = QVector3D(0, 1, 0);
+                        if (curNormal.isNull() || !isValidCoord(curNormal)) curNormal = QVector3D(0, 1, 0);
                     }
                     addVertex(triVerts[0], curNormal, QVector4D(1,1,1,1), false);
                     addVertex(triVerts[1], curNormal, QVector4D(1,1,1,1), false);
                     addVertex(triVerts[2], curNormal, QVector4D(1,1,1,1), false);
                 }
+                triVerts.clear();
             }
         }
     }
 
     // 归一化所有焊接顶点的累积法向量，形成平滑且保锐角法线
     for (size_t i = 0; i < mesh.vertices.size(); ++i) {
-        QVector3D n = accumulatedNormals[i].normalized();
-        if (!n.isNull()) {
-            mesh.vertices[i].normal = n;
+        if (i < accumulatedNormals.size()) {
+            QVector3D n = accumulatedNormals[i].normalized();
+            if (!n.isNull() && isValidCoord(n)) {
+                mesh.vertices[i].normal = n;
+            }
         }
     }
 
-    outModel->meshes.push_back(mesh);
-    return !mesh.vertices.isEmpty();
+    if (!mesh.vertices.isEmpty()) {
+        outModel->meshes.push_back(mesh);
+        return true;
+    }
+    return false;
 }
 
 bool ModelLoaderWorker::parseOBJ(const QString& path, ModelDataPtr outModel) {
@@ -580,6 +621,15 @@ bool ModelLoaderWorker::parseOBJ(const QString& path, ModelDataPtr outModel) {
     QTextStream in(&file);
     int lineCounter = 0;
 
+    auto isValidCoord3 = [](const QVector3D& v) {
+        return !std::isnan(v.x()) && !std::isnan(v.y()) && !std::isnan(v.z()) &&
+               !std::isinf(v.x()) && !std::isinf(v.y()) && !std::isinf(v.z());
+    };
+    auto isValidCoord2 = [](const QVector2D& v) {
+        return !std::isnan(v.x()) && !std::isnan(v.y()) &&
+               !std::isinf(v.x()) && !std::isinf(v.y());
+    };
+
     while (!in.atEnd()) {
         if (++lineCounter % 30000 == 0) {
             if (m_cancelRequested.load()) return false;
@@ -594,18 +644,54 @@ bool ModelLoaderWorker::parseOBJ(const QString& path, ModelDataPtr outModel) {
 
         const QString& prefix = tokens[0];
         if (prefix == "v" && tokens.size() >= 4) {
-            positions.push_back(QVector3D(tokens[1].toFloat(), tokens[2].toFloat(), tokens[3].toFloat()));
+            bool okX = false, okY = false, okZ = false;
+            float x = tokens[1].toFloat(&okX);
+            float y = tokens[2].toFloat(&okY);
+            float z = tokens[3].toFloat(&okZ);
+            if (okX && okY && okZ) {
+                QVector3D pos(x, y, z);
+                if (isValidCoord3(pos)) {
+                    positions.push_back(pos);
+                } else {
+                    positions.push_back(QVector3D(0, 0, 0));
+                }
+            } else {
+                positions.push_back(QVector3D(0, 0, 0));
+            }
+
             // 如果带顶点色 (OBJ 扩展: v x y z r g b)
             if (tokens.size() >= 7) {
-                float r = tokens[4].toFloat();
-                float g = tokens[5].toFloat();
-                float b = tokens[6].toFloat();
                 currentMesh.hasVertexColors = true;
             }
         } else if (prefix == "vn" && tokens.size() >= 4) {
-            normals.push_back(QVector3D(tokens[1].toFloat(), tokens[2].toFloat(), tokens[3].toFloat()));
+            bool okX = false, okY = false, okZ = false;
+            float nx = tokens[1].toFloat(&okX);
+            float ny = tokens[2].toFloat(&okY);
+            float nz = tokens[3].toFloat(&okZ);
+            if (okX && okY && okZ) {
+                QVector3D norm(nx, ny, nz);
+                if (isValidCoord3(norm)) {
+                    normals.push_back(norm);
+                } else {
+                    normals.push_back(QVector3D(0, 1, 0));
+                }
+            } else {
+                normals.push_back(QVector3D(0, 1, 0));
+            }
         } else if (prefix == "vt" && tokens.size() >= 3) {
-            texCoords.push_back(QVector2D(tokens[1].toFloat(), tokens[2].toFloat()));
+            bool okU = false, okV = false;
+            float u = tokens[1].toFloat(&okU);
+            float v = tokens[2].toFloat(&okV);
+            if (okU && okV) {
+                QVector2D tex(u, v);
+                if (isValidCoord2(tex)) {
+                    texCoords.push_back(tex);
+                } else {
+                    texCoords.push_back(QVector2D(0, 0));
+                }
+            } else {
+                texCoords.push_back(QVector2D(0, 0));
+            }
         } else if (prefix == "usemtl" && tokens.size() >= 2) {
             // 遇到材质分件
             if (!currentMesh.vertices.isEmpty()) {
@@ -615,27 +701,48 @@ bool ModelLoaderWorker::parseOBJ(const QString& path, ModelDataPtr outModel) {
             }
             currentMesh.name = tokens[1];
         } else if (prefix == "f" && tokens.size() >= 4) {
+            // 解析面索引，严格防御越界与负数相对索引
             QVector<uint32_t> faceIndices;
+            bool faceValid = true;
+
             for (int i = 1; i < tokens.size(); ++i) {
                 QStringList elem = tokens[i].split('/');
-                int pIdx = elem[0].toInt();
+                bool okP = false;
+                int pIdx = elem[0].toInt(&okP);
+                if (!okP || pIdx == 0) {
+                    faceValid = false;
+                    break;
+                }
+
+                // 转换 1-based 或负数相对索引
+                int realPIdx = (pIdx > 0) ? (pIdx - 1) : (positions.size() + pIdx);
+                if (realPIdx < 0 || realPIdx >= positions.size()) {
+                    faceValid = false;
+                    break;
+                }
+
                 int tIdx = elem.size() > 1 && !elem[1].isEmpty() ? elem[1].toInt() : 0;
                 int nIdx = elem.size() > 2 && !elem[2].isEmpty() ? elem[2].toInt() : 0;
 
-                QVector3D pos = (pIdx > 0 && pIdx <= positions.size()) ? positions[pIdx - 1] : QVector3D();
-                QVector2D tex = (tIdx > 0 && tIdx <= texCoords.size()) ? texCoords[tIdx - 1] : QVector2D();
-                QVector3D norm = (nIdx > 0 && nIdx <= normals.size()) ? normals[nIdx - 1] : QVector3D();
+                int realTIdx = (tIdx > 0) ? (tIdx - 1) : (tIdx < 0 ? (texCoords.size() + tIdx) : -1);
+                int realNIdx = (nIdx > 0) ? (nIdx - 1) : (nIdx < 0 ? (normals.size() + nIdx) : -1);
+
+                QVector3D pos = positions[realPIdx];
+                QVector2D tex = (realTIdx >= 0 && realTIdx < texCoords.size()) ? texCoords[realTIdx] : QVector2D();
+                QVector3D norm = (realNIdx >= 0 && realNIdx < normals.size()) ? normals[realNIdx] : QVector3D();
 
                 uint32_t vIdx = static_cast<uint32_t>(currentMesh.vertices.size());
                 currentMesh.vertices.push_back(Vertex(pos, norm, tex));
                 faceIndices.push_back(vIdx);
             }
 
-            // 多边形三角化 (Fan 三角剖分)
-            for (int t = 1; t + 1 < faceIndices.size(); ++t) {
-                currentMesh.indices.push_back(faceIndices[0]);
-                currentMesh.indices.push_back(faceIndices[t]);
-                currentMesh.indices.push_back(faceIndices[t + 1]);
+            if (faceValid && faceIndices.size() >= 3) {
+                // 多边形三角化 (Fan 三角剖分)
+                for (int t = 1; t + 1 < faceIndices.size(); ++t) {
+                    currentMesh.indices.push_back(faceIndices[0]);
+                    currentMesh.indices.push_back(faceIndices[t]);
+                    currentMesh.indices.push_back(faceIndices[t + 1]);
+                }
             }
         }
     }
@@ -663,9 +770,14 @@ bool ModelLoaderWorker::parsePLY(const QString& path, ModelDataPtr outModel) {
     bool colorIsFloat = false;
     int xOffset = 0, yOffset = 4, zOffset = 8;
     int rOffset = -1, gOffset = -1, bOffset = -1;
+    bool hasEndHeader = false;
 
-    while (!(line = file.readLine().trimmed()).isEmpty()) {
-        if (line == "end_header") break;
+    while (!file.atEnd()) {
+        line = file.readLine().trimmed();
+        if (line == "end_header") {
+            hasEndHeader = true;
+            break;
+        }
         QList<QByteArray> tokens = line.split(' ');
         if (tokens.isEmpty()) continue;
 
@@ -707,41 +819,59 @@ bool ModelLoaderWorker::parsePLY(const QString& path, ModelDataPtr outModel) {
         }
     }
 
-    if (vertexCount <= 0) return false;
+    if (!hasEndHeader || vertexCount <= 0 || vertexCount > 50000000) return false;
+    if (faceCount < 0 || faceCount > 50000000) faceCount = 0;
+
+    auto isValidCoord3 = [](const QVector3D& v) {
+        return !std::isnan(v.x()) && !std::isnan(v.y()) && !std::isnan(v.z()) &&
+               !std::isinf(v.x()) && !std::isinf(v.y()) && !std::isinf(v.z());
+    };
 
     SubMesh mesh;
     mesh.name = QFileInfo(path).baseName();
     mesh.diffuseColor = QVector3D(0.45f, 0.75f, 0.65f); // 工业薄荷翠绿材质
     mesh.hasVertexColors = hasColor;
-    mesh.vertices.reserve(vertexCount);
+    mesh.vertices.reserve(std::min(vertexCount, 5000000));
 
     if (isBinaryLittleEndian) {
         if (vertexByteSize <= 0) vertexByteSize = 12; // 默认 3 个 float
-        QByteArray vBuffer = file.read(static_cast<qint64>(vertexCount) * vertexByteSize);
+        // 防御算术溢出
+        qint64 totalVBytes = static_cast<qint64>(vertexCount) * static_cast<qint64>(vertexByteSize);
+        if (totalVBytes <= 0 || totalVBytes > 2000000000LL) return false;
+
+        QByteArray vBuffer = file.read(totalVBytes);
         const char* vPtr = vBuffer.constData();
         const qint64 bufSize = vBuffer.size();
 
         for (int i = 0; i < vertexCount; ++i) {
             if (i % 20000 == 0 && m_cancelRequested.load()) return false;
             qint64 offset = static_cast<qint64>(i) * vertexByteSize;
-            if (offset + 12 > bufSize) break;
+            if (offset + vertexByteSize > bufSize) break;
+            if (offset + xOffset + 4 > bufSize || offset + yOffset + 4 > bufSize || offset + zOffset + 4 > bufSize) break;
 
             float x = *reinterpret_cast<const float*>(vPtr + offset + xOffset);
             float y = *reinterpret_cast<const float*>(vPtr + offset + yOffset);
             float z = *reinterpret_cast<const float*>(vPtr + offset + zOffset);
 
-            Vertex v(QVector3D(x, y, z));
+            QVector3D pos(x, y, z);
+            if (!isValidCoord3(pos)) pos = QVector3D(0, 0, 0);
+
+            Vertex v(pos);
             if (hasColor && rOffset >= 0 && gOffset >= 0 && bOffset >= 0) {
                 if (colorIsFloat) {
-                    float r = *reinterpret_cast<const float*>(vPtr + offset + rOffset);
-                    float g = *reinterpret_cast<const float*>(vPtr + offset + gOffset);
-                    float b = *reinterpret_cast<const float*>(vPtr + offset + bOffset);
-                    v.color = QVector4D(r, g, b, 1.0f);
+                    if (offset + rOffset + 4 <= bufSize && offset + gOffset + 4 <= bufSize && offset + bOffset + 4 <= bufSize) {
+                        float r = *reinterpret_cast<const float*>(vPtr + offset + rOffset);
+                        float g = *reinterpret_cast<const float*>(vPtr + offset + gOffset);
+                        float b = *reinterpret_cast<const float*>(vPtr + offset + bOffset);
+                        v.color = QVector4D(r, g, b, 1.0f);
+                    }
                 } else {
-                    uint8_t r = *reinterpret_cast<const uint8_t*>(vPtr + offset + rOffset);
-                    uint8_t g = *reinterpret_cast<const uint8_t*>(vPtr + offset + gOffset);
-                    uint8_t b = *reinterpret_cast<const uint8_t*>(vPtr + offset + bOffset);
-                    v.color = QVector4D(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+                    if (offset + rOffset + 1 <= bufSize && offset + gOffset + 1 <= bufSize && offset + bOffset + 1 <= bufSize) {
+                        uint8_t r = *reinterpret_cast<const uint8_t*>(vPtr + offset + rOffset);
+                        uint8_t g = *reinterpret_cast<const uint8_t*>(vPtr + offset + gOffset);
+                        uint8_t b = *reinterpret_cast<const uint8_t*>(vPtr + offset + bOffset);
+                        v.color = QVector4D(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+                    }
                 }
             }
             mesh.vertices.push_back(v);
@@ -753,14 +883,30 @@ bool ModelLoaderWorker::parsePLY(const QString& path, ModelDataPtr outModel) {
                 if (f % 20000 == 0 && m_cancelRequested.load()) return false;
                 uint8_t nVerts = 0;
                 if (file.read(reinterpret_cast<char*>(&nVerts), 1) != 1) break;
-                if (nVerts < 3) continue;
+                if (nVerts < 3 || nVerts > 64) {
+                    // 若超过合理多边形边数，跳过该面对应字节以防溢出
+                    if (nVerts > 64) {
+                        file.seek(file.pos() + static_cast<qint64>(nVerts) * 4);
+                    }
+                    continue;
+                }
 
                 std::vector<uint32_t> fIndices(nVerts);
+                bool faceIndicesOk = true;
                 for (int k = 0; k < nVerts; ++k) {
                     int32_t idx = 0;
-                    file.read(reinterpret_cast<char*>(&idx), 4);
-                    fIndices[k] = static_cast<uint32_t>(idx);
+                    if (file.read(reinterpret_cast<char*>(&idx), 4) != 4) {
+                        faceIndicesOk = false;
+                        break;
+                    }
+                    if (idx < 0 || idx >= mesh.vertices.size()) {
+                        faceIndicesOk = false;
+                    } else {
+                        fIndices[k] = static_cast<uint32_t>(idx);
+                    }
                 }
+                if (!faceIndicesOk) continue;
+
                 for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
                     mesh.indices.push_back(fIndices[0]);
                     mesh.indices.push_back(fIndices[t]);
@@ -779,7 +925,10 @@ bool ModelLoaderWorker::parsePLY(const QString& path, ModelDataPtr outModel) {
                 QTextStream ts(&vLine);
                 float x = 0, y = 0, z = 0;
                 ts >> x >> y >> z;
-                Vertex v(QVector3D(x, y, z));
+                QVector3D pos(x, y, z);
+                if (!isValidCoord3(pos)) pos = QVector3D(0, 0, 0);
+
+                Vertex v(pos);
                 if (hasColor) {
                     float r = 255, g = 255, b = 255;
                     ts >> r >> g >> b;
@@ -800,13 +949,25 @@ bool ModelLoaderWorker::parsePLY(const QString& path, ModelDataPtr outModel) {
                     QTextStream ts(&fLine);
                     int nVerts = 0;
                     ts >> nVerts;
-                    if (nVerts >= 3) {
-                        std::vector<uint32_t> fIndices(nVerts);
-                        for (int k = 0; k < nVerts; ++k) ts >> fIndices[k];
-                        for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
-                            mesh.indices.push_back(fIndices[0]);
-                            mesh.indices.push_back(fIndices[t]);
-                            mesh.indices.push_back(fIndices[t + 1]);
+                    if (nVerts >= 3 && nVerts <= 64) {
+                        std::vector<uint32_t> fIndices;
+                        fIndices.reserve(nVerts);
+                        bool fOk = true;
+                        for (int k = 0; k < nVerts; ++k) {
+                            int idx = -1;
+                            ts >> idx;
+                            if (idx >= 0 && idx < mesh.vertices.size()) {
+                                fIndices.push_back(static_cast<uint32_t>(idx));
+                            } else {
+                                fOk = false;
+                            }
+                        }
+                        if (fOk && fIndices.size() >= 3) {
+                            for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
+                                mesh.indices.push_back(fIndices[0]);
+                                mesh.indices.push_back(fIndices[t]);
+                                mesh.indices.push_back(fIndices[t + 1]);
+                            }
                         }
                     }
                     break;
@@ -883,13 +1044,19 @@ bool ModelLoaderWorker::parseOFF(const QString& path, ModelDataPtr outModel) {
         return false;
     }
 
-    if (vertexCount <= 0) return false;
+    if (vertexCount <= 0 || vertexCount > 50000000) return false;
+    if (faceCount < 0 || faceCount > 50000000) faceCount = 0;
+
+    auto isValidCoord3 = [](const QVector3D& v) {
+        return !std::isnan(v.x()) && !std::isnan(v.y()) && !std::isnan(v.z()) &&
+               !std::isinf(v.x()) && !std::isinf(v.y()) && !std::isinf(v.z());
+    };
 
     SubMesh mesh;
     mesh.name = QFileInfo(path).baseName();
     mesh.diffuseColor = QVector3D(0.85f, 0.55f, 0.25f); // 工业琥珀金材质
     mesh.primitiveType = 0x0004; // GL_TRIANGLES
-    mesh.vertices.reserve(vertexCount);
+    mesh.vertices.reserve(std::min(vertexCount, 5000000));
 
     int readVerts = 0;
     while (!in.atEnd() && readVerts < vertexCount) {
@@ -899,7 +1066,9 @@ bool ModelLoaderWorker::parseOFF(const QString& path, ModelDataPtr outModel) {
         QTextStream ts(&line);
         float x = 0, y = 0, z = 0;
         ts >> x >> y >> z;
-        mesh.vertices.push_back(Vertex(QVector3D(x, y, z)));
+        QVector3D pos(x, y, z);
+        if (!isValidCoord3(pos)) pos = QVector3D(0, 0, 0);
+        mesh.vertices.push_back(Vertex(pos));
         readVerts++;
     }
 
@@ -911,15 +1080,25 @@ bool ModelLoaderWorker::parseOFF(const QString& path, ModelDataPtr outModel) {
         QTextStream ts(&line);
         int nVerts = 0;
         ts >> nVerts;
-        if (nVerts >= 3) {
-            std::vector<uint32_t> fIndices(nVerts);
+        if (nVerts >= 3 && nVerts <= 64) {
+            std::vector<uint32_t> fIndices;
+            fIndices.reserve(nVerts);
+            bool fOk = true;
             for (int k = 0; k < nVerts; ++k) {
-                ts >> fIndices[k];
+                int idx = -1;
+                ts >> idx;
+                if (idx >= 0 && idx < mesh.vertices.size()) {
+                    fIndices.push_back(static_cast<uint32_t>(idx));
+                } else {
+                    fOk = false;
+                }
             }
-            for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
-                mesh.indices.push_back(fIndices[0]);
-                mesh.indices.push_back(fIndices[t]);
-                mesh.indices.push_back(fIndices[t + 1]);
+            if (fOk && fIndices.size() >= 3) {
+                for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
+                    mesh.indices.push_back(fIndices[0]);
+                    mesh.indices.push_back(fIndices[t]);
+                    mesh.indices.push_back(fIndices[t + 1]);
+                }
             }
         }
         readFaces++;
@@ -1118,13 +1297,20 @@ QVector<SubMesh> ModelLoaderWorker::tessellatePrototype(const TopoDS_Shape& shap
         int nbTriangles = tri->NbTriangles();
         for (int i = 1; i <= nbTriangles; ++i) {
             Standard_Integer n1, n2, n3;
-            tri->Triangle(i).Get(n1, n2, n3);
-            if (isReversed) {
-                std::swap(n2, n3);
+            try {
+                tri->Triangle(i).Get(n1, n2, n3);
+                if (n1 < 1 || n1 > nbNodes || n2 < 1 || n2 > nbNodes || n3 < 1 || n3 > nbNodes) {
+                    continue; // 忽略无效拓扑三角形
+                }
+                if (isReversed) {
+                    std::swap(n2, n3);
+                }
+                solidMesh.indices.push_back(vertexBase + n1 - 1);
+                solidMesh.indices.push_back(vertexBase + n2 - 1);
+                solidMesh.indices.push_back(vertexBase + n3 - 1);
+            } catch (...) {
+                continue;
             }
-            solidMesh.indices.push_back(vertexBase + n1 - 1);
-            solidMesh.indices.push_back(vertexBase + n2 - 1);
-            solidMesh.indices.push_back(vertexBase + n3 - 1);
         }
     }
 
@@ -1705,44 +1891,50 @@ bool ModelLoaderWorker::parse3MF(const QString& path, ModelDataPtr outModel) {
     traceWorkerLog("parse3MF: Loading " + path);
     emit sigProgress(15, "正在解压缩 3MF 制造模型包 (QZipReader)...");
 
-    std::unique_ptr<QZipReader> zip = std::make_unique<QZipReader>(path);
-    if (!zip->isReadable()) {
-        QString safePath = resolveSafePath(path);
-        zip = std::make_unique<QZipReader>(safePath);
+    QByteArray modelXmlData;
+    try {
+        std::unique_ptr<QZipReader> zip = std::make_unique<QZipReader>(path);
         if (!zip->isReadable()) {
-            traceWorkerLog("parse3MF: Failed to open 3MF ZIP archive: " + path);
-            return false;
+            QString safePath = resolveSafePath(path);
+            zip = std::make_unique<QZipReader>(safePath);
+            if (!zip->isReadable()) {
+                traceWorkerLog("parse3MF: Failed to open 3MF ZIP archive: " + path);
+                return false;
+            }
         }
-    }
 
-    // 寻找 3D/3dmodel.model 或任意 .model 入口
-    QString modelEntry = "3D/3dmodel.model";
-    bool found = false;
-    const auto entries = zip->fileInfoList();
-    for (const auto& entry : entries) {
-        if (entry.filePath.compare("3D/3dmodel.model", Qt::CaseInsensitive) == 0) {
-            modelEntry = entry.filePath;
-            found = true;
-            break;
-        }
-    }
-    if (!found) {
+        // 寻找 3D/3dmodel.model 或任意 .model 入口
+        QString modelEntry = "3D/3dmodel.model";
+        bool found = false;
+        const auto entries = zip->fileInfoList();
         for (const auto& entry : entries) {
-            if (entry.filePath.endsWith(".model", Qt::CaseInsensitive)) {
+            if (entry.filePath.compare("3D/3dmodel.model", Qt::CaseInsensitive) == 0) {
                 modelEntry = entry.filePath;
                 found = true;
                 break;
             }
         }
-    }
+        if (!found) {
+            for (const auto& entry : entries) {
+                if (entry.filePath.endsWith(".model", Qt::CaseInsensitive)) {
+                    modelEntry = entry.filePath;
+                    found = true;
+                    break;
+                }
+            }
+        }
 
-    if (!found) {
-        traceWorkerLog("parse3MF: No .model file found in 3MF archive!");
+        if (!found) {
+            traceWorkerLog("parse3MF: No .model file found in 3MF archive!");
+            return false;
+        }
+
+        modelXmlData = zip->fileData(modelEntry);
+        zip->close();
+    } catch (...) {
+        traceWorkerLog("parse3MF: Caught exception during zip extraction");
         return false;
     }
-
-    QByteArray modelXmlData = zip->fileData(modelEntry);
-    zip->close();
 
     if (modelXmlData.isEmpty()) {
         traceWorkerLog("parse3MF: Model XML data is empty!");
@@ -1995,21 +2187,31 @@ bool ModelLoaderWorker::parse3MF(const QString& path, ModelDataPtr outModel) {
         std::unordered_map<PosKey, std::vector<VertexCandidate>, PosKeyHash> posMap;
         std::vector<QVector3D> accumulatedNormals;
 
+        auto isValidCoord3 = [](const QVector3D& v) {
+            return !std::isnan(v.x()) && !std::isnan(v.y()) && !std::isnan(v.z()) &&
+                   !std::isinf(v.x()) && !std::isinf(v.y()) && !std::isinf(v.z());
+        };
+
         auto addWeldedVertex = [&](const QVector3D& pos, const QVector3D& normal, const QVector4D& col) -> uint32_t {
-            PosKey key = { std::llround(pos.x() * 1000.0), std::llround(pos.y() * 1000.0), std::llround(pos.z() * 1000.0) };
+            QVector3D safePos = isValidCoord3(pos) ? pos : QVector3D(0, 0, 0);
+            QVector3D safeNorm = isValidCoord3(normal) ? normal : QVector3D(0, 1, 0);
+
+            PosKey key = { std::llround(safePos.x() * 1000.0), std::llround(safePos.y() * 1000.0), std::llround(safePos.z() * 1000.0) };
             auto& cands = posMap[key];
             for (const auto& cand : cands) {
-                float cosAngle = QVector3D::dotProduct(cand.refNormal, normal);
+                float cosAngle = QVector3D::dotProduct(cand.refNormal, safeNorm);
                 if (cosAngle >= 0.707f) { // 45 度阈值保锐角平滑
-                    accumulatedNormals[cand.vertexIndex] += normal;
+                    if (cand.vertexIndex < accumulatedNormals.size()) {
+                        accumulatedNormals[cand.vertexIndex] += safeNorm;
+                    }
                     return cand.vertexIndex;
                 }
             }
 
             uint32_t newIdx = static_cast<uint32_t>(solidMesh.vertices.size());
-            solidMesh.vertices.push_back(Vertex(pos, normal, QVector2D(), col));
-            accumulatedNormals.push_back(normal);
-            cands.push_back({newIdx, normal, col});
+            solidMesh.vertices.push_back(Vertex(safePos, safeNorm, QVector2D(), col));
+            accumulatedNormals.push_back(safeNorm);
+            cands.push_back({newIdx, safeNorm, col});
             return newIdx;
         };
 
@@ -2029,7 +2231,7 @@ bool ModelLoaderWorker::parse3MF(const QString& path, ModelDataPtr outModel) {
             const QVector3D& p3 = obj.vertices[tri.v3];
 
             QVector3D fn = QVector3D::crossProduct(p2 - p1, p3 - p1).normalized();
-            if (fn.isNull()) fn = QVector3D(0, 1, 0);
+            if (fn.isNull() || !isValidCoord3(fn)) fn = QVector3D(0, 1, 0);
 
             // 三角形独立材质色判断
             QVector4D triCol(defaultColor.x(), defaultColor.y(), defaultColor.z(), 1.0f);
@@ -2067,9 +2269,11 @@ bool ModelLoaderWorker::parse3MF(const QString& path, ModelDataPtr outModel) {
 
         // 归一化所有累积法向量
         for (size_t i = 0; i < solidMesh.vertices.size(); ++i) {
-            QVector3D n = accumulatedNormals[i].normalized();
-            if (!n.isNull()) {
-                solidMesh.vertices[i].normal = n;
+            if (i < accumulatedNormals.size()) {
+                QVector3D n = accumulatedNormals[i].normalized();
+                if (!n.isNull() && isValidCoord3(n)) {
+                    solidMesh.vertices[i].normal = n;
+                }
             }
         }
 

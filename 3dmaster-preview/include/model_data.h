@@ -59,15 +59,27 @@ struct SubMesh {
         if (vertices.isEmpty()) return;
         localAabbMin = QVector3D(1e9f, 1e9f, 1e9f);
         localAabbMax = QVector3D(-1e9f, -1e9f, -1e9f);
+        bool hasValidVertex = false;
         for (const auto& v : vertices) {
+            if (std::isnan(v.position.x()) || std::isnan(v.position.y()) || std::isnan(v.position.z()) ||
+                std::isinf(v.position.x()) || std::isinf(v.position.y()) || std::isinf(v.position.z())) {
+                continue;
+            }
             localAabbMin.setX(std::min(localAabbMin.x(), v.position.x()));
             localAabbMin.setY(std::min(localAabbMin.y(), v.position.y()));
             localAabbMin.setZ(std::min(localAabbMin.z(), v.position.z()));
             localAabbMax.setX(std::max(localAabbMax.x(), v.position.x()));
             localAabbMax.setY(std::max(localAabbMax.y(), v.position.y()));
             localAabbMax.setZ(std::max(localAabbMax.z(), v.position.z()));
+            hasValidVertex = true;
         }
-        hasLocalAabb = true;
+        if (hasValidVertex) {
+            hasLocalAabb = true;
+        } else {
+            localAabbMin = QVector3D(-1.0f, -1.0f, -1.0f);
+            localAabbMax = QVector3D(1.0f, 1.0f, 1.0f);
+            hasLocalAabb = true;
+        }
     }
 };
 
@@ -150,6 +162,10 @@ struct ModelData {
                         mesh.transform.map(QVector3D(mx.x(), mx.y(), mx.z()))
                     };
                     for (int i = 0; i < 8; ++i) {
+                        if (std::isnan(corners[i].x()) || std::isnan(corners[i].y()) || std::isnan(corners[i].z()) ||
+                            std::isinf(corners[i].x()) || std::isinf(corners[i].y()) || std::isinf(corners[i].z())) {
+                            continue;
+                        }
                         boundsMin.setX(std::min(boundsMin.x(), corners[i].x()));
                         boundsMin.setY(std::min(boundsMin.y(), corners[i].y()));
                         boundsMin.setZ(std::min(boundsMin.z(), corners[i].z()));
