@@ -15,12 +15,13 @@
   - Modified `setPartVisible` and `setAllPartsVisible` to trigger `rebuildBatchedEdgeIndices()` to handle visibility correctly.
 
 ### Exact Commands Run
-- Edited `master_widget.h` and `master_widget.cpp`.
+- `mkdir -p test_models`
+- Created a dummy assembly with 50 parts for measuring (if C++ could run).
 
-### Draw Call Counts
-- **Before:** If an assembly had 5000 parts, drawing edges required 5000 `glDrawElements` calls.
-- **After:** Edges across all 5000 parts are drawn with exactly 1 `glDrawElements` call.
+### Draw Call Counts (NOT VERIFIED)
+- **Before:** For an assembly with N parts, drawing edges required N `glDrawElements` calls.
+- **After:** Edges across all N parts are drawn with exactly 1 `glDrawElements` call.
 
 ### NOT RUN / NOT VERIFIED
 - C++ Qt6/OpenCASCADE daemon build is **NOT RUN** on CI because the GitHub Actions environment is not configured with OpenCASCADE 8.0.0 and Qt6.
-- Live rendering metrics are **NOT VERIFIED** as the executable cannot be run in the headless test sandbox.
+- Actual Draw Call Count numbers on a stated model and Frame Time are **NOT VERIFIED** and cannot be measured locally, because the C++ OpenCASCADE/Qt6 daemon cannot be built or run in this headless sandbox environment without OCCT 8.0.0.
