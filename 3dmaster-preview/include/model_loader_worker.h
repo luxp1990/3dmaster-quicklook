@@ -20,7 +20,7 @@ public:
     virtual ~ModelLoaderWorker() override;
 
     void requestCancel();
-    bool isCancelled() const { return m_cancelRequested.load(); }
+    bool isCancelled() const { return m_cancelRequested.load() || QThread::currentThread()->isInterruptionRequested(); }
 
 public slots:
     void startLoading();

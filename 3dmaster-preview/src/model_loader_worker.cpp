@@ -77,7 +77,7 @@ public:
     explicit OcctCancelIndicator(std::atomic<bool>& cancelFlag) : m_cancelFlag(cancelFlag) {}
 protected:
     bool UserBreak() override {
-        return m_cancelFlag.load();
+        return m_cancelFlag.load() || QThread::currentThread()->isInterruptionRequested();
     }
     void Show(const Message_ProgressScope&, const bool) override {}
 private:
@@ -462,11 +462,15 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
 
     if (isBinary) {
         // 二进制 STL
-        size_t reserveCount = std::min(triangleCount / 2, 5000000u);
-        mesh.vertices.reserve(reserveCount);
-        mesh.indices.reserve(std::min(triangleCount * 3, 30000000u));
-        posMap.reserve(reserveCount);
-        accumulatedNormals.reserve(reserveCount);
+        if (triangleCount > file.size() / 50) {
+          m_customErrorMessage = QString("模型文件损坏或声明的三角形数量不合理");
+          return false;
+        }
+      size_t reserveCount = std::min(triangleCount / 2, 5000000u);
+      mesh.vertices.reserve(reserveCount);
+      mesh.indices.reserve(std::min(triangleCount * 3, 30000000u));
+      posMap.reserve(reserveCount);
+      accumulatedNormals.reserve(reserveCount);
 
         const int chunkSize = 5000;
         QByteArray chunk;
@@ -606,6 +610,12 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
 bool ModelLoaderWorker::parseOBJ(const QString& path, ModelDataPtr outModel) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+
+    // Reject extremely large obj files immediately to prevent out of memory
+    if (file.size() > 500000000) { // e.g. > 500MB
+        m_customErrorMessage = QString("OBJ 文件过大，不支持解析超大型纯文本模型");
+        return false;
+    }
 
     QFileInfo fi(path);
     QDir baseDir = fi.dir();
@@ -826,6 +836,15 @@ bool ModelLoaderWorker::parsePLY(const QString& path, ModelDataPtr outModel) {
         return !std::isnan(v.x()) && !std::isnan(v.y()) && !std::isnan(v.z()) &&
                !std::isinf(v.x()) && !std::isinf(v.y()) && !std::isinf(v.z());
     };
+
+    if (vertexCount > file.size() / 3) {
+        m_customErrorMessage = QString("模型文件损坏或声明的顶点数量不合理");
+        return false;
+    }
+    if (faceCount > file.size() / 3) {
+        m_customErrorMessage = QString("模型文件损坏或声明的面数量不合理");
+        return false;
+    }
 
     SubMesh mesh;
     mesh.name = QFileInfo(path).baseName();
@@ -1051,6 +1070,15 @@ bool ModelLoaderWorker::parseOFF(const QString& path, ModelDataPtr outModel) {
         return !std::isnan(v.x()) && !std::isnan(v.y()) && !std::isnan(v.z()) &&
                !std::isinf(v.x()) && !std::isinf(v.y()) && !std::isinf(v.z());
     };
+
+    if (vertexCount > file.size() / 3) {
+        m_customErrorMessage = QString("模型文件损坏或声明的顶点数量不合理");
+        return false;
+    }
+    if (faceCount > file.size() / 3) {
+        m_customErrorMessage = QString("模型文件损坏或声明的面数量不合理");
+        return false;
+    }
 
     SubMesh mesh;
     mesh.name = QFileInfo(path).baseName();
@@ -2633,9 +2661,10 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
 
                 // 加固: 轮询等待同时实时排空匿名管道缓冲，避免大量转码日志撑满管道导致子进程挂起死锁
                 int elapsedMs = 0;
-                const int timeoutMs = 60000;
+                const int timeoutMs = 120000;
                 QByteArray stdOutBytes;
                 QByteArray stdErrBytes;
+                int lastProgressUpdateMs = 0;
                 while (proc.state() != QProcess::NotRunning && elapsedMs < timeoutMs) {
                     if (m_cancelRequested.load()) {
                         traceWorkerLog("parsePRT: User cancelled conversion, killing translator process.");
@@ -2648,13 +2677,19 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
                     stdOutBytes.append(proc.readAllStandardOutput());
                     stdErrBytes.append(proc.readAllStandardError());
                     elapsedMs += 200;
+                    if (elapsedMs - lastProgressUpdateMs >= 2000) {
+                        lastProgressUpdateMs = elapsedMs;
+                        emit sigProgress(20 + (elapsedMs * 30 / timeoutMs), QString("正在通过静默内核转码模型，请稍候 (%1s)...").arg(elapsedMs / 1000));
+                    }
                 }
 
                 if (proc.state() != QProcess::NotRunning) {
-                    traceWorkerLog("parsePRT: Translator process timed out after 60s, terminating.");
+                    traceWorkerLog(QString("parsePRT: Translator process timed out after %1s, terminating.").arg(timeoutMs / 1000));
+                    m_customErrorMessage = QString("转码超时 (超过 %1 秒)，后台进程已终止。可能模型过于庞大或引用缺失。").arg(timeoutMs / 1000);
                     proc.kill();
                     proc.waitForFinished(1000);
                     QFile::remove(tempStpPath);
+                    return false;
                 }
 
                 stdOutBytes.append(proc.readAllStandardOutput());

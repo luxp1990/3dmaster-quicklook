@@ -160,6 +160,7 @@ void PreviewWindow::cancelCurrentLoad() {
         m_worker->requestCancel();
     }
     if (m_workerThread && m_workerThread->isRunning()) {
+        m_workerThread->requestInterruption();
         m_workerThread->quit();
         if (!m_workerThread->wait(1500)) {
             qWarning() << "[PreviewWindow] Worker thread did not finish within 1500ms, detaching";

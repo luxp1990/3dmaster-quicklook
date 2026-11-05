@@ -572,7 +572,7 @@ void MasterWidget::buildBuffers() {
     };
     QMap<int, ProtoGpuRes> protoCache;
 
-    for (const auto& mesh : m_model->meshes) {
+    for (auto& mesh : m_model->meshes) {
         if (mesh.vertices.isEmpty() || mesh.indices.isEmpty()) continue;
 
         GLMesh gm;
@@ -587,36 +587,10 @@ void MasterWidget::buildBuffers() {
         gm.transform = mesh.transform;
         gm.prototypeId = mesh.prototypeId;
 
-        // 8 角点矩阵快速映射计算世界 AABB (供每帧视锥体剔除快速相交)
+        // 将局部 AABB 保留，每帧动态通过矩阵变换至世界空间进行视锥体裁剪
         if (mesh.hasLocalAabb) {
-            const bool hasTrsf = !mesh.transform.isIdentity();
-            if (!hasTrsf) {
-                gm.worldAabbMin = mesh.localAabbMin;
-                gm.worldAabbMax = mesh.localAabbMax;
-            } else {
-                const QVector3D& mn = mesh.localAabbMin;
-                const QVector3D& mx = mesh.localAabbMax;
-                const QVector3D corners[8] = {
-                    mesh.transform.map(QVector3D(mn.x(), mn.y(), mn.z())),
-                    mesh.transform.map(QVector3D(mx.x(), mn.y(), mn.z())),
-                    mesh.transform.map(QVector3D(mn.x(), mx.y(), mn.z())),
-                    mesh.transform.map(QVector3D(mx.x(), mx.y(), mn.z())),
-                    mesh.transform.map(QVector3D(mn.x(), mn.y(), mx.z())),
-                    mesh.transform.map(QVector3D(mx.x(), mn.y(), mx.z())),
-                    mesh.transform.map(QVector3D(mn.x(), mx.y(), mx.z())),
-                    mesh.transform.map(QVector3D(mx.x(), mx.y(), mx.z()))
-                };
-                gm.worldAabbMin = QVector3D(1e9f, 1e9f, 1e9f);
-                gm.worldAabbMax = QVector3D(-1e9f, -1e9f, -1e9f);
-                for (int cIdx = 0; cIdx < 8; ++cIdx) {
-                    gm.worldAabbMin.setX(std::min(gm.worldAabbMin.x(), corners[cIdx].x()));
-                    gm.worldAabbMin.setY(std::min(gm.worldAabbMin.y(), corners[cIdx].y()));
-                    gm.worldAabbMin.setZ(std::min(gm.worldAabbMin.z(), corners[cIdx].z()));
-                    gm.worldAabbMax.setX(std::max(gm.worldAabbMax.x(), corners[cIdx].x()));
-                    gm.worldAabbMax.setY(std::max(gm.worldAabbMax.y(), corners[cIdx].y()));
-                    gm.worldAabbMax.setZ(std::max(gm.worldAabbMax.z(), corners[cIdx].z()));
-                }
-            }
+            gm.worldAabbMin = mesh.localAabbMin;
+            gm.worldAabbMax = mesh.localAabbMax;
             gm.hasWorldAabb = true;
         }
 
@@ -717,6 +691,12 @@ void MasterWidget::buildBuffers() {
         }
 
         m_glMeshes.push_back(gm);
+
+        // Release CPU mesh to save RAM
+        mesh.vertices.clear();
+        mesh.vertices.shrink_to_fit();
+        mesh.indices.clear();
+        mesh.indices.shrink_to_fit();
     }
 
     if (m_program) {
@@ -845,16 +825,20 @@ void MasterWidget::paintGL() {
             glPolygonOffset(1.0f, 1.0f);
         }
 
-        FrustumPlanes frustum = FrustumPlanes::fromMatrix(mvp);
         for (auto& gm : m_glMeshes) {
             if (!gm.visible) continue;
             if (gm.primitiveType == 0x0001 || gm.isFeatureEdge) continue;
-            // 视锥体快速裁剪：剔除视口外部构件，0 次 Draw Call
-            if (gm.hasWorldAabb && !frustum.isBoxVisible(gm.worldAabbMin, gm.worldAabbMax)) continue; // 线段留给线着色器绘制
 
             const bool hasInstTrsf = !gm.transform.isIdentity();
-            QMatrix4x4 curModel = hasInstTrsf ? (modelMatrix * gm.transform) : modelMatrix;
             QMatrix4x4 curMVP = hasInstTrsf ? (mvp * gm.transform) : mvp;
+
+            // 视锥体快速裁剪：剔除视口外部构件，0 次 Draw Call (基于 SubMesh 局部 AABB 与当前 MVP 构建 frustum planes)
+            if (gm.hasWorldAabb) {
+                FrustumPlanes frustum = FrustumPlanes::fromMatrix(curMVP);
+                if (!frustum.isBoxVisible(gm.worldAabbMin, gm.worldAabbMax)) continue; // 仍然使用原变量名存储局部 AABB 方便复用
+            }
+
+            QMatrix4x4 curModel = hasInstTrsf ? (modelMatrix * gm.transform) : modelMatrix;
             m_program->setUniformValue("uModel", curModel);
             m_program->setUniformValue("uMVP", curMVP);
 
@@ -933,16 +917,20 @@ void MasterWidget::paintGL() {
         m_lineProgram->setUniformValue("uSectionEnabled", m_sectionEnabled ? 1 : 0);
         m_lineProgram->setUniformValue("uSectionPlane", sectionPlane);
 
-        FrustumPlanes edgeFrustum = FrustumPlanes::fromMatrix(mvp);
         for (auto& gm : m_glMeshes) {
             if (!gm.visible) continue;
             if (gm.primitiveType != 0x0001 && !gm.isFeatureEdge) continue;
-            // 视锥体快速裁剪：剔除视口外部特征线
-            if (gm.hasWorldAabb && !edgeFrustum.isBoxVisible(gm.worldAabbMin, gm.worldAabbMax)) continue;
 
             const bool hasInstTrsf = !gm.transform.isIdentity();
-            QMatrix4x4 curModel = hasInstTrsf ? (modelMatrix * gm.transform) : modelMatrix;
             QMatrix4x4 curMVP = hasInstTrsf ? (mvp * gm.transform) : mvp;
+
+            // 视锥体快速裁剪：剔除视口外部特征线 (基于 SubMesh 局部 AABB 与当前 MVP 构建 frustum planes)
+            if (gm.hasWorldAabb) {
+                FrustumPlanes edgeFrustum = FrustumPlanes::fromMatrix(curMVP);
+                if (!edgeFrustum.isBoxVisible(gm.worldAabbMin, gm.worldAabbMax)) continue;
+            }
+
+            QMatrix4x4 curModel = hasInstTrsf ? (modelMatrix * gm.transform) : modelMatrix;
             m_lineProgram->setUniformValue("uModel", curModel);
             m_lineProgram->setUniformValue("uMVP", curMVP);
 
