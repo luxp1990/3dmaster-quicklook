@@ -98,7 +98,7 @@ namespace QuickLook.Plugin.ThreeDMaster
             {
                 if (_reconnectTask == null || _reconnectTask.IsCompleted)
                 {
-                    _reconnectTask = Task.Run(() => DoReconnectWork(targetGen));
+                    _reconnectTask = _ = Task.Run(() => DoReconnectWork(targetGen));
                 }
             }
         }
@@ -211,7 +211,7 @@ namespace QuickLook.Plugin.ThreeDMaster
                 replayW = _lastResizeW;
                 replayH = _lastResizeH;
 
-                Task.Run(() => ReadLoop(newReader, currentGen, newCts.Token));
+                _ = Task.Run(() => ReadLoop(newReader, currentGen, newCts.Token));
             }
 
             // 锁外按顺序重放最后状态
@@ -278,10 +278,6 @@ namespace QuickLook.Plugin.ThreeDMaster
             string subExe = Path.Combine(pluginDir, "3dmaster-native", "3dmaster-preview.exe");
             if (File.Exists(subExe))
                 return subExe;
-
-            string devFallbackExe = @"D:\seer\3dmaster\3dmaster-quicklook\3dmaster-preview\build\Release\3dmaster-preview.exe";
-            if (File.Exists(devFallbackExe))
-                return devFallbackExe;
 
             return localExe;
         }
@@ -419,7 +415,7 @@ namespace QuickLook.Plugin.ThreeDMaster
                                 bool ok = parts[2].Equals("OK", StringComparison.OrdinalIgnoreCase);
                                 string err = (!ok && parts.Length > 3) ? string.Join(" ", parts, 3, parts.Length - 3) : null;
                                 // 锁外派发回调，杜绝死锁
-                                Task.Run(() => ModelLoadFinished?.Invoke(genId, ok, err));
+                                _ = Task.Run(() => ModelLoadFinished?.Invoke(genId, ok, err));
                             }
                         }
                     }

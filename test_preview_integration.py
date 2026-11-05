@@ -9,17 +9,18 @@ if sys.platform == "win32":
     import pywintypes
 
 PIPE_NAME = r"\\.\pipe\3dmaster_quicklook"
-EXE_PATH = r"D:\seer\3dmaster\3dmaster-quicklook\3dmaster-preview\build\Release\3dmaster-preview.exe"
-TEST_MODEL = r"D:\seer\3dmaster\test_models\box.glb"
-TEST_STEP = r"D:\seer\3dmaster\test_models\main_assembly.stp"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if sys.platform == "win32":
+    EXE_PATH = os.path.join(BASE_DIR, '3dmaster-preview', 'build', 'Release', '3dmaster-preview.exe')
+else:
+    EXE_PATH = os.path.join(BASE_DIR, '3dmaster-preview', 'build', '3dmaster-preview')
+
+TEST_MODEL = os.path.join(BASE_DIR, 'test_models', 'box.glb')
+TEST_STEP = os.path.join(BASE_DIR, 'test_models', 'main_assembly.stp')
 
 def run_test():
     print("[TEST] 1. Launching 3dmaster-preview.exe ...")
     env = os.environ.copy()
-    qt_bin = r"D:\seer\3dmaster\qt6\6.8.2\msvc2022_64\bin"
-    occt_bin = r"D:\seer\3dmaster\occt\win64\vc14\bin"
-    orig_dir = r"D:\seer\3dmaster\3dmaster"
-    env["PATH"] = f"{qt_bin};{occt_bin};{orig_dir};" + env.get("PATH", "")
 
     proc = subprocess.Popen([EXE_PATH, "--pipe", "3dmaster_quicklook"],
                             cwd=os.path.dirname(EXE_PATH),
