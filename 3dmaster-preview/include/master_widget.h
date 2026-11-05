@@ -140,6 +140,23 @@ private:
     };
     QVector<GLMesh> m_glMeshes;
 
+    // Batched edge geometry data
+    struct BatchedEdgeData {
+        std::shared_ptr<QOpenGLVertexArrayObject> vao;
+        std::shared_ptr<QOpenGLBuffer> vbo;
+        std::shared_ptr<QOpenGLBuffer> ibo;
+        int indexCount = 0;
+        float lineWidth = 1.5f;
+    };
+    BatchedEdgeData m_batchedEdges;
+    struct BatchedPartInfo {
+        int partId;
+        uint32_t vOffset;
+        QVector<uint32_t> indices;
+    };
+    QVector<BatchedPartInfo> m_batchedPartInfos;
+    void rebuildBatchedEdgeIndices();
+
     // 地面标尺网格静态 GPU 缓冲
     QOpenGLBuffer m_gridVbo{QOpenGLBuffer::VertexBuffer};
     int m_gridVertexCount = 0;

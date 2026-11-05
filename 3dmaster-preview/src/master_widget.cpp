@@ -226,6 +226,18 @@ void MasterWidget::setPartVisible(int partId, bool visible) {
             }
         }
     }
+    // Also check batched edges to see if we need to rebuild
+    bool batchedChanged = false;
+    for (const auto& bpi : m_batchedPartInfos) {
+        if (bpi.partId == partId) {
+            batchedChanged = true;
+            break;
+        }
+    }
+    if (batchedChanged) {
+        rebuildBatchedEdgeIndices();
+        changed = true;
+    }
     if (changed) {
         update();
     }
@@ -238,6 +250,10 @@ void MasterWidget::setAllPartsVisible(bool visible) {
             gm.visible = visible;
             changed = true;
         }
+    }
+    if (!m_batchedPartInfos.isEmpty()) {
+        rebuildBatchedEdgeIndices();
+        changed = true;
     }
     if (changed) {
         update();
@@ -433,24 +449,34 @@ void MasterWidget::initShaders() {
     m_lineProgram = std::make_unique<QOpenGLShaderProgram>();
     const char* lineVShader = R"(
         attribute vec3 aPos;
+        attribute vec4 aColor;
         uniform mat4 uMVP;
         uniform mat4 uModel;
+        uniform int uUseVertexColor;
+        uniform vec4 uLineColor;
         varying vec3 vWorldPos;
+        varying vec4 vColor;
         void main() {
-            vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
-            gl_Position = uMVP * vec4(aPos, 1.0);
+            vec4 pos = vec4(aPos, 1.0);
+            vWorldPos = (uModel * pos).xyz;
+            if (uUseVertexColor == 1) {
+                vColor = aColor;
+            } else {
+                vColor = uLineColor;
+            }
+            gl_Position = uMVP * pos;
         }
     )";
     const char* lineFShader = R"(
         varying vec3 vWorldPos;
-        uniform vec4 uLineColor;
+        varying vec4 vColor;
         uniform int uSectionEnabled;
         uniform vec4 uSectionPlane;
         void main() {
             if (uSectionEnabled == 1 && (dot(vWorldPos, uSectionPlane.xyz) + uSectionPlane.w > 0.0)) {
                 discard;
             }
-            gl_FragColor = uLineColor;
+            gl_FragColor = vColor;
         }
     )";
     bool ok2 = m_lineProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, lineVShader) &&
@@ -572,8 +598,34 @@ void MasterWidget::buildBuffers() {
     };
     QMap<int, ProtoGpuRes> protoCache;
 
+
+    // We will batch edges into a single buffer
+    QVector<Vertex> batchedEdgeVerts;
+    m_batchedPartInfos.clear();
+
     for (auto& mesh : m_model->meshes) {
         if (mesh.vertices.isEmpty() || mesh.indices.isEmpty()) continue;
+
+        if (mesh.isFeatureEdge || mesh.primitiveType == 0x0001) {
+            uint32_t vOffset = batchedEdgeVerts.size();
+            bool hasTrsf = !mesh.transform.isIdentity();
+            QVector4D color(mesh.diffuseColor, 1.0f);
+
+            for (const auto& v : mesh.vertices) {
+                Vertex nv = v;
+                if (hasTrsf) {
+                    nv.position = mesh.transform.map(v.position);
+                }
+                nv.color = color;
+                batchedEdgeVerts.push_back(nv);
+            }
+            BatchedPartInfo bpi;
+            bpi.partId = mesh.partId;
+            bpi.vOffset = vOffset;
+            bpi.indices = mesh.indices;
+            m_batchedPartInfos.push_back(bpi);
+            continue; // Skip putting edges into m_glMeshes
+        }
 
         GLMesh gm;
         gm.diffuseColor = mesh.diffuseColor;
@@ -910,54 +962,19 @@ void MasterWidget::paintGL() {
     }
 
     // 2.2 绘制 CAD 原生特征硬轮廓线 (Shaded with Edges)
-    if (m_lineProgram && m_showFeatureEdges && !m_glMeshes.isEmpty()) {
+    if (m_lineProgram && m_showFeatureEdges && m_batchedEdges.indexCount > 0) {
         m_lineProgram->bind();
         m_lineProgram->setUniformValue("uMVP", mvp);
-        m_lineProgram->setUniformValue("uModel", modelMatrix);
+        m_lineProgram->setUniformValue("uModel", modelMatrix); // batched edges already have instance transform baked, so use identity-like base model
         m_lineProgram->setUniformValue("uSectionEnabled", m_sectionEnabled ? 1 : 0);
         m_lineProgram->setUniformValue("uSectionPlane", sectionPlane);
+        m_lineProgram->setUniformValue("uUseVertexColor", 1); // use vertex color
 
-        for (auto& gm : m_glMeshes) {
-            if (!gm.visible) continue;
-            if (gm.primitiveType != 0x0001 && !gm.isFeatureEdge) continue;
-
-            const bool hasInstTrsf = !gm.transform.isIdentity();
-            QMatrix4x4 curMVP = hasInstTrsf ? (mvp * gm.transform) : mvp;
-
-            // 视锥体快速裁剪：剔除视口外部特征线 (基于 SubMesh 局部 AABB 与当前 MVP 构建 frustum planes)
-            if (gm.hasWorldAabb) {
-                FrustumPlanes edgeFrustum = FrustumPlanes::fromMatrix(curMVP);
-                if (!edgeFrustum.isBoxVisible(gm.worldAabbMin, gm.worldAabbMax)) continue;
-            }
-
-            QMatrix4x4 curModel = hasInstTrsf ? (modelMatrix * gm.transform) : modelMatrix;
-            m_lineProgram->setUniformValue("uModel", curModel);
-            m_lineProgram->setUniformValue("uMVP", curMVP);
-
-            // 特征棱线使用深空炭黑色 (Dark Charcoal CAD Line)，增强工业结构几何质感
-            m_lineProgram->setUniformValue("uLineColor", QVector4D(gm.diffuseColor, 1.0f));
-
-            if (gm.vao && gm.vao->isCreated()) {
-                gm.vao->bind();
-            } else {
-                if (gm.vbo) gm.vbo->bind();
-                if (gm.ibo) gm.ibo->bind();
-                int posAttr = m_lineProgram->attributeLocation("aPos");
-                if (posAttr >= 0) {
-                    m_lineProgram->enableAttributeArray(posAttr);
-                    m_lineProgram->setAttributeBuffer(posAttr, GL_FLOAT, offsetof(Vertex, position), 3, sizeof(Vertex));
-                }
-            }
-
-            glLineWidth(gm.lineWidth);
-            glDrawElements(GL_LINES, gm.indexCount, GL_UNSIGNED_INT, nullptr);
-
-            if (gm.vao && gm.vao->isCreated()) {
-                gm.vao->release();
-            } else {
-                if (gm.vbo) gm.vbo->release();
-                if (gm.ibo) gm.ibo->release();
-            }
+        if (m_batchedEdges.vao && m_batchedEdges.vao->isCreated()) {
+            m_batchedEdges.vao->bind();
+            glLineWidth(m_batchedEdges.lineWidth);
+            glDrawElements(GL_LINES, m_batchedEdges.indexCount, GL_UNSIGNED_INT, nullptr);
+            m_batchedEdges.vao->release();
         }
 
         m_lineProgram->release();
@@ -1008,6 +1025,7 @@ void MasterWidget::drawGrid() {
     m_lineProgram->setUniformValue("uMVP", mvp);
     m_lineProgram->setUniformValue("uModel", modelMatrix);
     m_lineProgram->setUniformValue("uSectionEnabled", 0);
+    m_lineProgram->setUniformValue("uUseVertexColor", 0);
     m_lineProgram->setUniformValue("uLineColor", QVector4D(0.22f, 0.28f, 0.38f, 0.8f));
 
     glDepthMask(GL_FALSE);
@@ -1042,6 +1060,7 @@ void MasterWidget::drawAxis() {
     m_lineProgram->setUniformValue("uMVP", axisProj * axisView);
     m_lineProgram->setUniformValue("uModel", identityModel);
     m_lineProgram->setUniformValue("uSectionEnabled", 0);
+    m_lineProgram->setUniformValue("uUseVertexColor", 0);
 
     float len = 35.0f;
     QVector3D xLine[] = { QVector3D(0, 0, 0), QVector3D(len, 0, 0) };
@@ -1103,6 +1122,7 @@ void MasterWidget::drawBoundingBox() {
     m_lineProgram->setUniformValue("uMVP", mvp);
     m_lineProgram->setUniformValue("uModel", modelMatrix);
     m_lineProgram->setUniformValue("uSectionEnabled", 0);
+    m_lineProgram->setUniformValue("uUseVertexColor", 0);
     // 高级青色三维包围盒线框
     m_lineProgram->setUniformValue("uLineColor", QVector4D(0.20f, 0.75f, 1.0f, 0.85f));
 
