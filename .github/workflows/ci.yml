@@ -43,7 +43,6 @@ jobs:
         echo "Reason: Requires the built C++ daemon binary."
         # If we had a pre-built binary, we would run: python test_preview_integration.py
 
-    - name: Run UI Smoke Test (NOT VERIFIED)
+    - name: Run UI Smoke Test
       run: |
-        echo "NOT VERIFIED: Headless UI Smoke Test (test_ui_smoke.py)."
-        echo "Reason: The PyQt6 smoke test can be executed, but the full daemon binary isn't built. We will run it locally."
+        python test_ui_smoke.py
