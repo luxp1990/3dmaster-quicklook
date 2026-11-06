@@ -472,16 +472,79 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
       posMap.reserve(reserveCount);
       accumulatedNormals.reserve(reserveCount);
 
-        const int chunkSize = 5000;
-        QByteArray chunk;
-        chunk.resize(chunkSize * 50);
+        uchar* mappedData = nullptr;
+        // memory map if > 10MB
+        if (fileSize > 10 * 1024 * 1024) {
+            mappedData = file.map(0, fileSize);
+        }
 
-        uint32_t readCount = 0;
-        while (readCount < triangleCount) {
-            if (m_cancelRequested.load()) return false;
+        if (mappedData) {
+            const char* ptr = reinterpret_cast<const char*>(mappedData) + 84;
+            uint32_t readCount = 0;
+            const uint32_t checkInterval = 10000; // Check cancel every 10000 triangles
 
-            uint32_t currentChunk = std::min(static_cast<uint32_t>(chunkSize), triangleCount - readCount);
-            qint64 bytesRead = file.read(chunk.data(), currentChunk * 50);
+            while (readCount < triangleCount) {
+                if (readCount % checkInterval == 0) {
+                    if (m_cancelRequested.load()) {
+                        file.unmap(mappedData);
+                        return false;
+                    }
+                    int pct = 10 + static_cast<int>(80.0 * readCount / std::max(1u, triangleCount));
+                    emit sigProgress(pct, QString("已解析 %1 / %2 面片...").arg(readCount).arg(triangleCount));
+                }
+
+                float normX, normY, normZ;
+                memcpy(&normX, ptr, 4);
+                memcpy(&normY, ptr + 4, 4);
+                memcpy(&normZ, ptr + 8, 4);
+                QVector3D normal(normX, normY, normZ);
+
+                float v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z;
+                memcpy(&v0x, ptr + 12, 4); memcpy(&v0y, ptr + 16, 4); memcpy(&v0z, ptr + 20, 4);
+                memcpy(&v1x, ptr + 24, 4); memcpy(&v1y, ptr + 28, 4); memcpy(&v1z, ptr + 32, 4);
+                memcpy(&v2x, ptr + 36, 4); memcpy(&v2y, ptr + 40, 4); memcpy(&v2z, ptr + 44, 4);
+
+                QVector3D p0(v0x, v0y, v0z);
+                QVector3D p1(v1x, v1y, v1z);
+                QVector3D p2(v2x, v2y, v2z);
+
+                if (normal.isNull() || normal.lengthSquared() < 1e-6f || !isValidCoord(normal)) {
+                    normal = QVector3D::crossProduct(p1 - p0, p2 - p0).normalized();
+                    if (normal.isNull() || !isValidCoord(normal)) normal = QVector3D(0, 1, 0);
+                }
+
+                uint16_t attr = 0;
+                memcpy(&attr, ptr + 48, 2);
+                bool hasColor = false;
+                QVector4D col(1.0f, 1.0f, 1.0f, 1.0f);
+                if (attr & 0x8000) {
+                    float r = ((attr >> 10) & 0x1F) / 31.0f;
+                    float g = ((attr >> 5) & 0x1F) / 31.0f;
+                    float b = (attr & 0x1F) / 31.0f;
+                    col = QVector4D(r, g, b, 1.0f);
+                    hasColor = true;
+                }
+
+                addVertex(p0, normal, col, hasColor);
+                addVertex(p1, normal, col, hasColor);
+                addVertex(p2, normal, col, hasColor);
+
+                ptr += 50;
+                readCount++;
+            }
+            file.unmap(mappedData);
+        } else {
+            // Fallback to chunks
+            const int chunkSize = 5000;
+            QByteArray chunk;
+            chunk.resize(chunkSize * 50);
+
+            uint32_t readCount = 0;
+            while (readCount < triangleCount) {
+                if (m_cancelRequested.load()) return false;
+
+                uint32_t currentChunk = std::min(static_cast<uint32_t>(chunkSize), triangleCount - readCount);
+                qint64 bytesRead = file.read(chunk.data(), currentChunk * 50);
             if (bytesRead < static_cast<qint64>(currentChunk * 50)) {
                 // 文件发生意外截断，安全处理已有完整读取部分
                 uint32_t actualFullTriangles = static_cast<uint32_t>(std::max<qint64>(0, bytesRead) / 50);
@@ -536,6 +599,7 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
             emit sigProgress(pct, QString("已解析 %1 / %2 面片...").arg(readCount).arg(triangleCount));
             if (bytesRead < static_cast<qint64>(chunkSize * 50)) break;
         }
+    }
     } else {
         // ASCII STL
         file.seek(0);
