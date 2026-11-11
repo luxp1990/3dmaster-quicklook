@@ -466,13 +466,88 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
           m_customErrorMessage = QString("模型文件损坏或声明的三角形数量不合理");
           return false;
         }
-      size_t reserveCount = std::min(triangleCount / 2, 5000000u);
-      mesh.vertices.reserve(reserveCount);
-      mesh.indices.reserve(std::min(triangleCount * 3, 30000000u));
-      posMap.reserve(reserveCount);
-      accumulatedNormals.reserve(reserveCount);
 
-        const int chunkSize = 5000;
+        bool mmapHandled = false;
+        if (qEnvironmentVariableIntValue("3DMASTER_USE_MMAP") == 1) {
+            uchar* mapped = file.map(0, fileSize);
+            if (mapped) {
+                mmapHandled = true;
+                size_t reserveCount = std::min(triangleCount / 2, 5000000u);
+                mesh.vertices.reserve(reserveCount);
+                mesh.indices.reserve(std::min(triangleCount * 3, 30000000u));
+                posMap.reserve(reserveCount);
+                accumulatedNormals.reserve(reserveCount);
+
+                const char* ptr = reinterpret_cast<const char*>(mapped) + 84;
+                for (uint32_t i = 0; i < triangleCount; ++i) {
+                    if (i % 20000 == 0) {
+                        if (m_cancelRequested.load()) {
+                            file.unmap(mapped);
+                            return false;
+                        }
+                        emit sigProgress(10 + static_cast<int>(80.0 * i / std::max(1u, triangleCount)),
+                                        QString("已解析 %1 / %2 面片(MMAP)...").arg(i).arg(triangleCount));
+                    }
+
+                    if (84 + static_cast<qint64>(i + 1) * 50 > fileSize) {
+                        // Bounds check failed, fallback
+                        mmapHandled = false;
+                        break;
+                    }
+
+                    float normX, normY, normZ;
+                    memcpy(&normX, ptr, 4); memcpy(&normY, ptr + 4, 4); memcpy(&normZ, ptr + 8, 4);
+                    QVector3D normal(normX, normY, normZ);
+
+                    float v0x, v0y, v0z, v1x, v1y, v1z, v2x, v2y, v2z;
+                    memcpy(&v0x, ptr + 12, 4); memcpy(&v0y, ptr + 16, 4); memcpy(&v0z, ptr + 20, 4);
+                    memcpy(&v1x, ptr + 24, 4); memcpy(&v1y, ptr + 28, 4); memcpy(&v1z, ptr + 32, 4);
+                    memcpy(&v2x, ptr + 36, 4); memcpy(&v2y, ptr + 40, 4); memcpy(&v2z, ptr + 44, 4);
+
+                    QVector3D p0(v0x, v0y, v0z); QVector3D p1(v1x, v1y, v1z); QVector3D p2(v2x, v2y, v2z);
+
+                    if (normal.isNull() || normal.lengthSquared() < 1e-6f || !isValidCoord(normal)) {
+                        normal = QVector3D::crossProduct(p1 - p0, p2 - p0).normalized();
+                        if (normal.isNull() || !isValidCoord(normal)) normal = QVector3D(0, 1, 0);
+                    }
+
+                    uint16_t attr = 0;
+                    memcpy(&attr, ptr + 48, 2);
+                    bool hasColor = false;
+                    QVector4D col(1.0f, 1.0f, 1.0f, 1.0f);
+                    if (attr & 0x8000) {
+                        col = QVector4D(((attr >> 10) & 0x1F) / 31.0f, ((attr >> 5) & 0x1F) / 31.0f, (attr & 0x1F) / 31.0f, 1.0f);
+                        hasColor = true;
+                    }
+
+                    addVertex(p0, normal, col, hasColor);
+                    addVertex(p1, normal, col, hasColor);
+                    addVertex(p2, normal, col, hasColor);
+
+                    ptr += 50;
+                }
+
+                file.unmap(mapped);
+                if (!mmapHandled) {
+                    // Reset state for fallback
+                    mesh.vertices.clear();
+                    mesh.indices.clear();
+                    posMap.clear();
+                    accumulatedNormals.clear();
+                    mesh.hasVertexColors = false;
+                    file.seek(84);
+                }
+            }
+        }
+
+        if (!mmapHandled) {
+            size_t reserveCount = std::min(triangleCount / 2, 5000000u);
+            mesh.vertices.reserve(reserveCount);
+            mesh.indices.reserve(std::min(triangleCount * 3, 30000000u));
+            posMap.reserve(reserveCount);
+            accumulatedNormals.reserve(reserveCount);
+
+            const int chunkSize = 5000;
         QByteArray chunk;
         chunk.resize(chunkSize * 50);
 
@@ -535,6 +610,7 @@ bool ModelLoaderWorker::parseSTL(const QString& path, ModelDataPtr outModel) {
             int pct = 10 + static_cast<int>(80.0 * readCount / std::max(1u, triangleCount));
             emit sigProgress(pct, QString("已解析 %1 / %2 面片...").arg(readCount).arg(triangleCount));
             if (bytesRead < static_cast<qint64>(chunkSize * 50)) break;
+        }
         }
     } else {
         // ASCII STL
@@ -858,78 +934,188 @@ bool ModelLoaderWorker::parsePLY(const QString& path, ModelDataPtr outModel) {
         qint64 totalVBytes = static_cast<qint64>(vertexCount) * static_cast<qint64>(vertexByteSize);
         if (totalVBytes <= 0 || totalVBytes > 2000000000LL) return false;
 
-        QByteArray vBuffer = file.read(totalVBytes);
-        const char* vPtr = vBuffer.constData();
-        const qint64 bufSize = vBuffer.size();
+        qint64 dataOffset = file.pos();
+        bool mmapHandled = false;
 
-        for (int i = 0; i < vertexCount; ++i) {
-            if (i % 20000 == 0 && m_cancelRequested.load()) return false;
-            qint64 offset = static_cast<qint64>(i) * vertexByteSize;
-            if (offset + vertexByteSize > bufSize) break;
-            if (offset + xOffset + 4 > bufSize || offset + yOffset + 4 > bufSize || offset + zOffset + 4 > bufSize) break;
+        if (qEnvironmentVariableIntValue("3DMASTER_USE_MMAP") == 1) {
+            uchar* mapped = file.map(0, file.size());
+            if (mapped) {
+                mmapHandled = true;
+                const char* vPtr = reinterpret_cast<const char*>(mapped) + dataOffset;
+                const qint64 bufSize = file.size() - dataOffset;
 
-            float x = *reinterpret_cast<const float*>(vPtr + offset + xOffset);
-            float y = *reinterpret_cast<const float*>(vPtr + offset + yOffset);
-            float z = *reinterpret_cast<const float*>(vPtr + offset + zOffset);
-
-            QVector3D pos(x, y, z);
-            if (!isValidCoord3(pos)) pos = QVector3D(0, 0, 0);
-
-            Vertex v(pos);
-            if (hasColor && rOffset >= 0 && gOffset >= 0 && bOffset >= 0) {
-                if (colorIsFloat) {
-                    if (offset + rOffset + 4 <= bufSize && offset + gOffset + 4 <= bufSize && offset + bOffset + 4 <= bufSize) {
-                        float r = *reinterpret_cast<const float*>(vPtr + offset + rOffset);
-                        float g = *reinterpret_cast<const float*>(vPtr + offset + gOffset);
-                        float b = *reinterpret_cast<const float*>(vPtr + offset + bOffset);
-                        v.color = QVector4D(r, g, b, 1.0f);
+                for (int i = 0; i < vertexCount; ++i) {
+                    if (i % 20000 == 0) {
+                        if (m_cancelRequested.load()) {
+                            file.unmap(mapped);
+                            return false;
+                        }
                     }
-                } else {
-                    if (offset + rOffset + 1 <= bufSize && offset + gOffset + 1 <= bufSize && offset + bOffset + 1 <= bufSize) {
-                        uint8_t r = *reinterpret_cast<const uint8_t*>(vPtr + offset + rOffset);
-                        uint8_t g = *reinterpret_cast<const uint8_t*>(vPtr + offset + gOffset);
-                        uint8_t b = *reinterpret_cast<const uint8_t*>(vPtr + offset + bOffset);
-                        v.color = QVector4D(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+                    qint64 offset = static_cast<qint64>(i) * vertexByteSize;
+                    if (offset + vertexByteSize > bufSize) break;
+                    if (offset + xOffset + 4 > bufSize || offset + yOffset + 4 > bufSize || offset + zOffset + 4 > bufSize) break;
+
+                    float x = *reinterpret_cast<const float*>(vPtr + offset + xOffset);
+                    float y = *reinterpret_cast<const float*>(vPtr + offset + yOffset);
+                    float z = *reinterpret_cast<const float*>(vPtr + offset + zOffset);
+
+                    QVector3D pos(x, y, z);
+                    if (!isValidCoord3(pos)) pos = QVector3D(0, 0, 0);
+
+                    Vertex v(pos);
+                    if (hasColor && rOffset >= 0 && gOffset >= 0 && bOffset >= 0) {
+                        if (colorIsFloat) {
+                            if (offset + rOffset + 4 <= bufSize && offset + gOffset + 4 <= bufSize && offset + bOffset + 4 <= bufSize) {
+                                float r = *reinterpret_cast<const float*>(vPtr + offset + rOffset);
+                                float g = *reinterpret_cast<const float*>(vPtr + offset + gOffset);
+                                float b = *reinterpret_cast<const float*>(vPtr + offset + bOffset);
+                                v.color = QVector4D(r, g, b, 1.0f);
+                            }
+                        } else {
+                            if (offset + rOffset + 1 <= bufSize && offset + gOffset + 1 <= bufSize && offset + bOffset + 1 <= bufSize) {
+                                uint8_t r = *reinterpret_cast<const uint8_t*>(vPtr + offset + rOffset);
+                                uint8_t g = *reinterpret_cast<const uint8_t*>(vPtr + offset + gOffset);
+                                uint8_t b = *reinterpret_cast<const uint8_t*>(vPtr + offset + bOffset);
+                                v.color = QVector4D(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+                            }
+                        }
                     }
+                    mesh.vertices.push_back(v);
+                }
+
+                // 读取 Face 拓扑面片 (MMAP)
+                if (faceCount > 0) {
+                    qint64 faceOffset = static_cast<qint64>(vertexCount) * vertexByteSize;
+                    for (int f = 0; f < faceCount; ++f) {
+                        if (f % 20000 == 0) {
+                            if (m_cancelRequested.load()) {
+                                file.unmap(mapped);
+                                return false;
+                            }
+                        }
+                        if (faceOffset + 1 > bufSize) {
+                            mmapHandled = false; // bounds check fail, fallback
+                            break;
+                        }
+
+                        uint8_t nVerts = *reinterpret_cast<const uint8_t*>(vPtr + faceOffset);
+                        faceOffset += 1;
+
+                        if (nVerts < 3 || nVerts > 64) {
+                            if (nVerts > 64) {
+                                faceOffset += static_cast<qint64>(nVerts) * 4;
+                            }
+                            continue;
+                        }
+
+                        if (faceOffset + static_cast<qint64>(nVerts) * 4 > bufSize) {
+                            mmapHandled = false; // bounds check fail, fallback
+                            break;
+                        }
+
+                        std::vector<uint32_t> fIndices(nVerts);
+                        bool faceIndicesOk = true;
+                        for (int k = 0; k < nVerts; ++k) {
+                            int32_t idx = *reinterpret_cast<const int32_t*>(vPtr + faceOffset);
+                            faceOffset += 4;
+                            if (idx < 0 || idx >= mesh.vertices.size()) {
+                                faceIndicesOk = false;
+                            } else {
+                                fIndices[k] = static_cast<uint32_t>(idx);
+                            }
+                        }
+                        if (!faceIndicesOk) continue;
+
+                        for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
+                            mesh.indices.push_back(fIndices[0]);
+                            mesh.indices.push_back(fIndices[t]);
+                            mesh.indices.push_back(fIndices[t + 1]);
+                        }
+                    }
+                }
+                file.unmap(mapped);
+                if (!mmapHandled) {
+                    mesh.vertices.clear();
+                    mesh.indices.clear();
+                    file.seek(dataOffset);
                 }
             }
-            mesh.vertices.push_back(v);
         }
 
-        // 读取 Face 拓扑面片
-        if (faceCount > 0) {
-            for (int f = 0; f < faceCount; ++f) {
-                if (f % 20000 == 0 && m_cancelRequested.load()) return false;
-                uint8_t nVerts = 0;
-                if (file.read(reinterpret_cast<char*>(&nVerts), 1) != 1) break;
-                if (nVerts < 3 || nVerts > 64) {
-                    // 若超过合理多边形边数，跳过该面对应字节以防溢出
-                    if (nVerts > 64) {
-                        file.seek(file.pos() + static_cast<qint64>(nVerts) * 4);
-                    }
-                    continue;
-                }
+        if (!mmapHandled) {
+            QByteArray vBuffer = file.read(totalVBytes);
+            const char* vPtr = vBuffer.constData();
+            const qint64 bufSize = vBuffer.size();
 
-                std::vector<uint32_t> fIndices(nVerts);
-                bool faceIndicesOk = true;
-                for (int k = 0; k < nVerts; ++k) {
-                    int32_t idx = 0;
-                    if (file.read(reinterpret_cast<char*>(&idx), 4) != 4) {
-                        faceIndicesOk = false;
-                        break;
-                    }
-                    if (idx < 0 || idx >= mesh.vertices.size()) {
-                        faceIndicesOk = false;
+            for (int i = 0; i < vertexCount; ++i) {
+                if (i % 20000 == 0 && m_cancelRequested.load()) return false;
+                qint64 offset = static_cast<qint64>(i) * vertexByteSize;
+                if (offset + vertexByteSize > bufSize) break;
+                if (offset + xOffset + 4 > bufSize || offset + yOffset + 4 > bufSize || offset + zOffset + 4 > bufSize) break;
+
+                float x = *reinterpret_cast<const float*>(vPtr + offset + xOffset);
+                float y = *reinterpret_cast<const float*>(vPtr + offset + yOffset);
+                float z = *reinterpret_cast<const float*>(vPtr + offset + zOffset);
+
+                QVector3D pos(x, y, z);
+                if (!isValidCoord3(pos)) pos = QVector3D(0, 0, 0);
+
+                Vertex v(pos);
+                if (hasColor && rOffset >= 0 && gOffset >= 0 && bOffset >= 0) {
+                    if (colorIsFloat) {
+                        if (offset + rOffset + 4 <= bufSize && offset + gOffset + 4 <= bufSize && offset + bOffset + 4 <= bufSize) {
+                            float r = *reinterpret_cast<const float*>(vPtr + offset + rOffset);
+                            float g = *reinterpret_cast<const float*>(vPtr + offset + gOffset);
+                            float b = *reinterpret_cast<const float*>(vPtr + offset + bOffset);
+                            v.color = QVector4D(r, g, b, 1.0f);
+                        }
                     } else {
-                        fIndices[k] = static_cast<uint32_t>(idx);
+                        if (offset + rOffset + 1 <= bufSize && offset + gOffset + 1 <= bufSize && offset + bOffset + 1 <= bufSize) {
+                            uint8_t r = *reinterpret_cast<const uint8_t*>(vPtr + offset + rOffset);
+                            uint8_t g = *reinterpret_cast<const uint8_t*>(vPtr + offset + gOffset);
+                            uint8_t b = *reinterpret_cast<const uint8_t*>(vPtr + offset + bOffset);
+                            v.color = QVector4D(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+                        }
                     }
                 }
-                if (!faceIndicesOk) continue;
+                mesh.vertices.push_back(v);
+            }
 
-                for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
-                    mesh.indices.push_back(fIndices[0]);
-                    mesh.indices.push_back(fIndices[t]);
-                    mesh.indices.push_back(fIndices[t + 1]);
+            // 读取 Face 拓扑面片
+            if (faceCount > 0) {
+                for (int f = 0; f < faceCount; ++f) {
+                    if (f % 20000 == 0 && m_cancelRequested.load()) return false;
+                    uint8_t nVerts = 0;
+                    if (file.read(reinterpret_cast<char*>(&nVerts), 1) != 1) break;
+                    if (nVerts < 3 || nVerts > 64) {
+                        // 若超过合理多边形边数，跳过该面对应字节以防溢出
+                        if (nVerts > 64) {
+                            file.seek(file.pos() + static_cast<qint64>(nVerts) * 4);
+                        }
+                        continue;
+                    }
+
+                    std::vector<uint32_t> fIndices(nVerts);
+                    bool faceIndicesOk = true;
+                    for (int k = 0; k < nVerts; ++k) {
+                        int32_t idx = 0;
+                        if (file.read(reinterpret_cast<char*>(&idx), 4) != 4) {
+                            faceIndicesOk = false;
+                            break;
+                        }
+                        if (idx < 0 || idx >= mesh.vertices.size()) {
+                            faceIndicesOk = false;
+                        } else {
+                            fIndices[k] = static_cast<uint32_t>(idx);
+                        }
+                    }
+                    if (!faceIndicesOk) continue;
+
+                    for (size_t t = 1; t + 1 < fIndices.size(); ++t) {
+                        mesh.indices.push_back(fIndices[0]);
+                        mesh.indices.push_back(fIndices[t]);
+                        mesh.indices.push_back(fIndices[t + 1]);
+                    }
                 }
             }
         }
