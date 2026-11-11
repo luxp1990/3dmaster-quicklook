@@ -66,6 +66,16 @@ MasterWidget::~MasterWidget() {
             }
         }
         m_glMeshes.clear();
+
+    if (m_batchedEdgeVao && m_batchedEdgeVao->isCreated()) m_batchedEdgeVao->destroy();
+    if (m_batchedEdgeVbo && m_batchedEdgeVbo->isCreated()) m_batchedEdgeVbo->destroy();
+    if (m_batchedEdgeIbo && m_batchedEdgeIbo->isCreated()) m_batchedEdgeIbo->destroy();
+    m_batchedEdgeVao.reset();
+    m_batchedEdgeVbo.reset();
+    m_batchedEdgeIbo.reset();
+    m_batchedEdgeIndexCount = 0;
+    m_batchedEdgeBufferDirty = true;
+
         if (m_gridVbo.isCreated()) {
             m_gridVbo.destroy();
         }
@@ -227,6 +237,7 @@ void MasterWidget::setPartVisible(int partId, bool visible) {
         }
     }
     if (changed) {
+        m_batchedEdgeBufferDirty = true;
         update();
     }
 }
@@ -240,6 +251,7 @@ void MasterWidget::setAllPartsVisible(bool visible) {
         }
     }
     if (changed) {
+        m_batchedEdgeBufferDirty = true;
         update();
     }
 }
@@ -433,16 +445,20 @@ void MasterWidget::initShaders() {
     m_lineProgram = std::make_unique<QOpenGLShaderProgram>();
     const char* lineVShader = R"(
         attribute vec3 aPos;
+        attribute vec4 aCol;
         uniform mat4 uMVP;
         uniform mat4 uModel;
         varying vec3 vWorldPos;
+        varying vec4 vColor;
         void main() {
             vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
+            vColor = aCol;
             gl_Position = uMVP * vec4(aPos, 1.0);
         }
     )";
     const char* lineFShader = R"(
         varying vec3 vWorldPos;
+        varying vec4 vColor;
         uniform vec4 uLineColor;
         uniform int uSectionEnabled;
         uniform vec4 uSectionPlane;
@@ -450,7 +466,7 @@ void MasterWidget::initShaders() {
             if (uSectionEnabled == 1 && (dot(vWorldPos, uSectionPlane.xyz) + uSectionPlane.w > 0.0)) {
                 discard;
             }
-            gl_FragColor = uLineColor;
+            gl_FragColor = vColor * uLineColor;
         }
     )";
     bool ok2 = m_lineProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, lineVShader) &&
@@ -550,6 +566,16 @@ void MasterWidget::buildBuffers() {
     }
     m_glMeshes.clear();
 
+    if (m_batchedEdgeVao && m_batchedEdgeVao->isCreated()) m_batchedEdgeVao->destroy();
+    if (m_batchedEdgeVbo && m_batchedEdgeVbo->isCreated()) m_batchedEdgeVbo->destroy();
+    if (m_batchedEdgeIbo && m_batchedEdgeIbo->isCreated()) m_batchedEdgeIbo->destroy();
+    m_batchedEdgeVao.reset();
+    m_batchedEdgeVbo.reset();
+    m_batchedEdgeIbo.reset();
+    m_batchedEdgeIndexCount = 0;
+    m_batchedEdgeBufferDirty = true;
+
+
     if (!m_shadersValid) {
         return;
     }
@@ -576,6 +602,7 @@ void MasterWidget::buildBuffers() {
         if (mesh.vertices.isEmpty() || mesh.indices.isEmpty()) continue;
 
         GLMesh gm;
+        gm.srcMesh = &mesh;
         gm.diffuseColor = mesh.diffuseColor;
         gm.hasVertexColor = mesh.hasVertexColors;
         gm.indexCount = mesh.indices.size();
@@ -607,31 +634,21 @@ void MasterWidget::buildBuffers() {
             continue;
         }
 
-        gm.vao = std::make_shared<QOpenGLVertexArrayObject>();
-        gm.vao->create();
-        gm.vao->bind();
-
-        gm.vbo = std::make_shared<QOpenGLBuffer>(QOpenGLBuffer::VertexBuffer);
-        gm.vbo->create();
-        gm.vbo->bind();
-
-        gm.ibo = std::make_shared<QOpenGLBuffer>(QOpenGLBuffer::IndexBuffer);
-        gm.ibo->create();
-        gm.ibo->bind();
-
         if (gm.isFeatureEdge || gm.primitiveType == 0x0001) {
-            if (m_lineProgram) m_lineProgram->bind();
-            gm.vbo->allocate(mesh.vertices.constData(), mesh.vertices.size() * sizeof(Vertex));
-            gm.ibo->allocate(mesh.indices.constData(), mesh.indices.size() * sizeof(uint32_t));
-
-            if (m_lineProgram) {
-                int posAttr = m_lineProgram->attributeLocation("aPos");
-                if (posAttr >= 0) {
-                    m_lineProgram->enableAttributeArray(posAttr);
-                    m_lineProgram->setAttributeBuffer(posAttr, GL_FLOAT, offsetof(Vertex, position), 3, sizeof(Vertex));
-                }
-            }
+            // Edges will be batched later, skip VBO creation here.
         } else {
+            gm.vao = std::make_shared<QOpenGLVertexArrayObject>();
+            gm.vao->create();
+            gm.vao->bind();
+
+            gm.vbo = std::make_shared<QOpenGLBuffer>(QOpenGLBuffer::VertexBuffer);
+            gm.vbo->create();
+            gm.vbo->bind();
+
+            gm.ibo = std::make_shared<QOpenGLBuffer>(QOpenGLBuffer::IndexBuffer);
+            gm.ibo->create();
+            gm.ibo->bind();
+
             gm.isCompact = !mesh.hasVertexColors;
             if (gm.isCompact) {
                 QVector<CompactVertex> compactVerts;
@@ -705,6 +722,68 @@ void MasterWidget::buildBuffers() {
 
     updateGridBuffer();
 }
+
+
+void MasterWidget::updateBatchedEdgeBuffer() {
+    m_batchedEdgeBufferDirty = false;
+
+    QVector<Vertex> batchedVerts;
+    QVector<uint32_t> batchedIndices;
+
+    for (const auto& gm : m_glMeshes) {
+        if (!gm.visible) continue;
+        if (gm.primitiveType != 0x0001 && !gm.isFeatureEdge) continue;
+        if (!gm.srcMesh) continue;
+
+        uint32_t startIndex = static_cast<uint32_t>(batchedVerts.size());
+        const auto& verts = gm.srcMesh->vertices;
+        const auto& inds = gm.srcMesh->indices;
+
+        for (const auto& v : verts) {
+            Vertex newV = v;
+            newV.position = gm.transform.map(newV.position);
+            newV.color = QVector4D(gm.diffuseColor, 1.0f);
+            batchedVerts.push_back(newV);
+        }
+
+        for (uint32_t idx : inds) {
+            batchedIndices.push_back(startIndex + idx);
+        }
+    }
+
+    m_batchedEdgeIndexCount = batchedIndices.size();
+    if (m_batchedEdgeIndexCount == 0) return;
+
+    if (!m_batchedEdgeVao) {
+        m_batchedEdgeVao = std::make_shared<QOpenGLVertexArrayObject>();
+        m_batchedEdgeVao->create();
+        m_batchedEdgeVbo = std::make_shared<QOpenGLBuffer>(QOpenGLBuffer::VertexBuffer);
+        m_batchedEdgeVbo->create();
+        m_batchedEdgeIbo = std::make_shared<QOpenGLBuffer>(QOpenGLBuffer::IndexBuffer);
+        m_batchedEdgeIbo->create();
+    }
+
+    m_batchedEdgeVao->bind();
+    m_batchedEdgeVbo->bind();
+    m_batchedEdgeVbo->allocate(batchedVerts.constData(), batchedVerts.size() * sizeof(Vertex));
+    m_batchedEdgeIbo->bind();
+    m_batchedEdgeIbo->allocate(batchedIndices.constData(), batchedIndices.size() * sizeof(uint32_t));
+
+    if (m_lineProgram) {
+        int posAttr = m_lineProgram->attributeLocation("aPos");
+        if (posAttr >= 0) {
+            m_lineProgram->enableAttributeArray(posAttr);
+            m_lineProgram->setAttributeBuffer(posAttr, GL_FLOAT, offsetof(Vertex, position), 3, sizeof(Vertex));
+        }
+        int colAttr = m_lineProgram->attributeLocation("aCol");
+        if (colAttr >= 0) {
+            m_lineProgram->enableAttributeArray(colAttr);
+            m_lineProgram->setAttributeBuffer(colAttr, GL_FLOAT, offsetof(Vertex, color), 4, sizeof(Vertex));
+        }
+    }
+    m_batchedEdgeVao->release();
+}
+
 
 float MasterWidget::minCameraDistance() const {
     if (m_model && m_model->boundingRadius > 1e-4f) {
@@ -909,56 +988,23 @@ void MasterWidget::paintGL() {
         }
     }
 
-    // 2.2 绘制 CAD 原生特征硬轮廓线 (Shaded with Edges)
-    if (m_lineProgram && m_showFeatureEdges && !m_glMeshes.isEmpty()) {
+    // 2.2 绘制 CAD 原生特征硬轮廓线 (Shaded with Edges) (Batched)
+    if (m_batchedEdgeBufferDirty) {
+        updateBatchedEdgeBuffer();
+    }
+
+    if (m_lineProgram && m_showFeatureEdges && m_batchedEdgeIndexCount > 0 && m_batchedEdgeVao) {
         m_lineProgram->bind();
         m_lineProgram->setUniformValue("uMVP", mvp);
         m_lineProgram->setUniformValue("uModel", modelMatrix);
         m_lineProgram->setUniformValue("uSectionEnabled", m_sectionEnabled ? 1 : 0);
         m_lineProgram->setUniformValue("uSectionPlane", sectionPlane);
+        m_lineProgram->setUniformValue("uLineColor", QVector4D(1.0f, 1.0f, 1.0f, 1.0f));
 
-        for (auto& gm : m_glMeshes) {
-            if (!gm.visible) continue;
-            if (gm.primitiveType != 0x0001 && !gm.isFeatureEdge) continue;
-
-            const bool hasInstTrsf = !gm.transform.isIdentity();
-            QMatrix4x4 curMVP = hasInstTrsf ? (mvp * gm.transform) : mvp;
-
-            // 视锥体快速裁剪：剔除视口外部特征线 (基于 SubMesh 局部 AABB 与当前 MVP 构建 frustum planes)
-            if (gm.hasWorldAabb) {
-                FrustumPlanes edgeFrustum = FrustumPlanes::fromMatrix(curMVP);
-                if (!edgeFrustum.isBoxVisible(gm.worldAabbMin, gm.worldAabbMax)) continue;
-            }
-
-            QMatrix4x4 curModel = hasInstTrsf ? (modelMatrix * gm.transform) : modelMatrix;
-            m_lineProgram->setUniformValue("uModel", curModel);
-            m_lineProgram->setUniformValue("uMVP", curMVP);
-
-            // 特征棱线使用深空炭黑色 (Dark Charcoal CAD Line)，增强工业结构几何质感
-            m_lineProgram->setUniformValue("uLineColor", QVector4D(gm.diffuseColor, 1.0f));
-
-            if (gm.vao && gm.vao->isCreated()) {
-                gm.vao->bind();
-            } else {
-                if (gm.vbo) gm.vbo->bind();
-                if (gm.ibo) gm.ibo->bind();
-                int posAttr = m_lineProgram->attributeLocation("aPos");
-                if (posAttr >= 0) {
-                    m_lineProgram->enableAttributeArray(posAttr);
-                    m_lineProgram->setAttributeBuffer(posAttr, GL_FLOAT, offsetof(Vertex, position), 3, sizeof(Vertex));
-                }
-            }
-
-            glLineWidth(gm.lineWidth);
-            glDrawElements(GL_LINES, gm.indexCount, GL_UNSIGNED_INT, nullptr);
-
-            if (gm.vao && gm.vao->isCreated()) {
-                gm.vao->release();
-            } else {
-                if (gm.vbo) gm.vbo->release();
-                if (gm.ibo) gm.ibo->release();
-            }
-        }
+        m_batchedEdgeVao->bind();
+        glLineWidth(1.5f);
+        glDrawElements(GL_LINES, m_batchedEdgeIndexCount, GL_UNSIGNED_INT, nullptr);
+        m_batchedEdgeVao->release();
 
         m_lineProgram->release();
     }
@@ -1016,6 +1062,11 @@ void MasterWidget::drawGrid() {
     if (posAttr >= 0) {
         m_lineProgram->enableAttributeArray(posAttr);
         m_lineProgram->setAttributeBuffer(posAttr, GL_FLOAT, 0, 3, sizeof(QVector3D));
+        int colAttr = m_lineProgram->attributeLocation("aCol");
+        if (colAttr >= 0) {
+            m_lineProgram->disableAttributeArray(colAttr);
+            m_lineProgram->setAttributeValue(colAttr, QVector4D(1.0f, 1.0f, 1.0f, 1.0f));
+        }
         glDrawArrays(GL_LINES, 0, m_gridVertexCount);
         m_lineProgram->disableAttributeArray(posAttr);
     }
@@ -1052,6 +1103,11 @@ void MasterWidget::drawAxis() {
     if (posAttr >= 0) {
         m_lineProgram->enableAttributeArray(posAttr);
 
+        int colAttr = m_lineProgram->attributeLocation("aCol");
+        if (colAttr >= 0) {
+            m_lineProgram->disableAttributeArray(colAttr);
+            m_lineProgram->setAttributeValue(colAttr, QVector4D(1.0f, 1.0f, 1.0f, 1.0f));
+        }
         // X轴 红色
         m_lineProgram->setUniformValue("uLineColor", QVector4D(0.95f, 0.25f, 0.25f, 1.0f));
         m_lineProgram->setAttributeArray(posAttr, xLine);
@@ -1110,6 +1166,11 @@ void MasterWidget::drawBoundingBox() {
     if (posAttr >= 0) {
         m_lineProgram->enableAttributeArray(posAttr);
         m_lineProgram->setAttributeArray(posAttr, boxLines);
+        int colAttr = m_lineProgram->attributeLocation("aCol");
+        if (colAttr >= 0) {
+            m_lineProgram->disableAttributeArray(colAttr);
+            m_lineProgram->setAttributeValue(colAttr, QVector4D(1.0f, 1.0f, 1.0f, 1.0f));
+        }
         glLineWidth(1.8f);
         glDrawArrays(GL_LINES, 0, 24);
         m_lineProgram->disableAttributeArray(posAttr);
