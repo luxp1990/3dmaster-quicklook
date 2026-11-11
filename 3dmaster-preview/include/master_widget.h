@@ -137,6 +137,7 @@ private:
         QVector3D worldAabbMin; // 世界空间包围盒下界 (用于视锥体剔除 Frustum Culling)
         QVector3D worldAabbMax; // 世界空间包围盒上界
         bool hasWorldAabb = false;
+        const SubMesh* srcMesh = nullptr;
     };
     QVector<GLMesh> m_glMeshes;
 
@@ -173,6 +174,13 @@ private:
     QVector3D getCursorWorldPointOnFocusPlane(const QPoint& screenPos);
 
     // 显示特性开关
+    std::shared_ptr<QOpenGLVertexArrayObject> m_batchedEdgeVao;
+    std::shared_ptr<QOpenGLBuffer> m_batchedEdgeVbo;
+    std::shared_ptr<QOpenGLBuffer> m_batchedEdgeIbo;
+    int m_batchedEdgeIndexCount = 0;
+    bool m_batchedEdgeBufferDirty = true;
+    void updateBatchedEdgeBuffer();
+
     ShadingMode m_shadingMode = ShadingMode::MaterialColor;
     bool m_showGrid = true;
     bool m_showAxis = true;
