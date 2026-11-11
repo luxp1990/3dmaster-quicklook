@@ -31,9 +31,9 @@ NOT RUN: executable not found at /app/3dmaster-preview/build/3dmaster-preview. C
 - **Run existing python tests**: NOT VERIFIED - `test_preview_integration.py` requires compiled 3dmaster-preview.exe (which requires OCCT 8.0.0 and Windows for IPC test).
 - **Run smoke test with actual process execution**: NOT VERIFIED - `smoke_test.py` validates the model and attempts to run, but gracefuly exits with code 0 on missing executable because the 3dmaster-preview.exe cannot be built in the CI sandbox environment due to the OCCT 8.0.0 requirement.
 
-- ---
+---
 
- ## Item 2 - Batched Edge/Line Rendering
+## Item 2 - Batched Edge/Line Rendering
 
 ### Scope
 Changed the preview renderer so edges for a model are accumulated into batched geometry (a single merged line-segments buffer per model/part) and drawn with as few draw calls as practical (1 call), without changing how the result looks. If part visibility changes, the batched buffer is updated dynamically.
