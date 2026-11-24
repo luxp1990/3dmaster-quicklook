@@ -30,11 +30,13 @@ jobs:
           target: 'desktop'
           arch: 'win64_msvc2022_64'
 
-      - name: Download & Extract OCCT 8.0.0
+      - name: Download & Extract OCCT 8.0.0 & 3rdparty
         shell: pwsh
         run: |
           Write-Host "Downloading OpenCASCADE 8.0.0 combined package..."
           Invoke-WebRequest -Uri "https://github.com/Open-Cascade-SAS/OCCT/releases/download/V8_0_0/occt-combined-release-pch.zip" -OutFile "occt-combined.zip"
+          Write-Host "Downloading OpenCASCADE 8.0.0 3rdparty dependencies (TBB, jemalloc, freetype)..."
+          Invoke-WebRequest -Uri "https://github.com/Open-Cascade-SAS/OCCT/releases/download/V8_0_0/3rdparty-vc14-64.zip" -OutFile "3rdparty.zip"
           
           Write-Host "Extracting outer archive..."
           Expand-Archive -Path "occt-combined.zip" -DestinationPath "temp_occt"
@@ -54,6 +56,17 @@ jobs:
                 Move-Item $_.FullName "occt/" -Force
               }
             }
+          }
+
+          Write-Host "Extracting 3rdparty dependencies..."
+          Expand-Archive -Path "3rdparty.zip" -DestinationPath "temp_3rd"
+          $nested3rd = Get-ChildItem -Path "temp_3rd" -Filter "*.zip" | Select-Object -First 1
+          Expand-Archive -Path $nested3rd.FullName -DestinationPath "3rdparty"
+          Remove-Item -Path "temp_3rd", "3rdparty.zip" -Recurse -Force
+
+          Write-Host "Copying 3rdparty DLLs into occt/win64/vc14/bin..."
+          Get-ChildItem -Path "3rdparty" -Recurse -Filter "*.dll" | ForEach-Object {
+            Copy-Item $_.FullName "occt/win64/vc14/bin/" -Force
           }
 
           if (-not (Test-Path "occt/inc")) { throw "occt/inc directory missing after extraction!" }
