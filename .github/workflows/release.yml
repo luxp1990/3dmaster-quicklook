@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-quicklook:
+    name: Build QuickLook Full Plugin (Windows)
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '7.0.x'
+
+      - name: Install Qt 6.8
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.2'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          modules: 'qtbase'
+
+      - name: Download & Extract OCCT 8.0.0
+        shell: pwsh
+        run: |
+          Write-Host "Downloading OpenCASCADE 8.0.0 combined package..."
+          Invoke-WebRequest -Uri "https://github.com/Open-Cascade-SAS/OCCT/releases/download/V8_0_0/occt-combined-release-pch.zip" -OutFile "occt-combined.zip"
+          
+          Write-Host "Extracting outer archive..."
+          Expand-Archive -Path "occt-combined.zip" -DestinationPath "temp_occt"
+          $nestedZip = Get-ChildItem -Path "temp_occt" -Filter "*.zip" | Select-Object -First 1
+          
+          Write-Host "Extracting nested archive: $($nestedZip.FullName)..."
+          Expand-Archive -Path $nestedZip.FullName -DestinationPath "occt"
+          Remove-Item -Path "temp_occt", "occt-combined.zip" -Recurse -Force
+
+          if (-not (Test-Path "occt/inc")) { throw "occt/inc directory missing after extraction!" }
+          if (-not (Test-Path "occt/win64/vc14/lib")) { throw "occt/win64/vc14/lib directory missing after extraction!" }
+          if (-not (Test-Path "occt/win64/vc14/bin")) { throw "occt/win64/vc14/bin directory missing after extraction!" }
+          Write-Host "OCCT 8.0.0 verified."
+
+      - name: Build 3dmaster-preview
+        shell: pwsh
+        run: |
+          $occtPath = (Resolve-Path "occt").Path
+          cmake -B 3dmaster-preview/build -S 3dmaster-preview -G "Visual Studio 17 2022" -A x64 -DOCCT_DIR="$occtPath"
+          cmake --build 3dmaster-preview/build --config Release --target 3dmaster-preview
+
+      - name: Pack Plugin (.qlplugin & portable zip)
+        shell: pwsh
+        run: |
+          cd QuickLook.Plugin.3DMaster
+          .\pack-plugin.ps1
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3dmaster-quicklook-plugins
+          path: |
+            QuickLook.Plugin.ThreeDMaster.qlplugin
+            QuickLook.Plugin.ThreeDMaster_Portable.zip
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v1.0.0' }
+          $notes = "### 3dmaster for Windows QuickLook (Full Edition with OpenCASCADE 8.0.0)`n`n" +
+                   "Supported formats: STEP (.stp, .step), IGES (.igs, .iges), glTF (.gltf, .glb), 3MF, STL, OBJ, PLY, OFF, PRT.`n`n" +
+                   "**Installation:**`n" +
+                   "1. **One-Click (.qlplugin):** Download ``QuickLook.Plugin.ThreeDMaster.qlplugin``, select it in File Explorer, and press Spacebar to install automatically.`n" +
+                   "2. **Manual / Portable (.zip):** Download ``QuickLook.Plugin.ThreeDMaster_Portable.zip`` and extract it into your QuickLook plugin directory.`n" +
+                   "3. Restart QuickLook."
+
+          gh release create $tag QuickLook.Plugin.ThreeDMaster.qlplugin QuickLook.Plugin.ThreeDMaster_Portable.zip --title "3dmaster-quicklook $tag (Full OCCT Edition)" --notes "$notes" --clobber

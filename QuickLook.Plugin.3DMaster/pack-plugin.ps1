@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $projectRoot = (Resolve-Path (Join-Path $scriptDir "..")).Path
@@ -6,9 +6,11 @@ $csharpReleaseDir = Join-Path $scriptDir "bin\Release"
 $previewExe = Join-Path $projectRoot "3dmaster-preview\build\Release\3dmaster-preview.exe"
 
 $qtBin = Join-Path $projectRoot "qt6\6.8.2\msvc2022_64\bin"
+if (-not (Test-Path $qtBin) -and $env:QT_ROOT_DIR) { $qtBin = Join-Path $env:QT_ROOT_DIR "bin" }
 if (-not (Test-Path $qtBin)) { $qtBin = "D:\seer\3dmaster\qt6\6.8.2\msvc2022_64\bin" }
 
 $qtPlugins = Join-Path $projectRoot "qt6\6.8.2\msvc2022_64\plugins"
+if (-not (Test-Path $qtPlugins) -and $env:QT_ROOT_DIR) { $qtPlugins = Join-Path $env:QT_ROOT_DIR "plugins" }
 if (-not (Test-Path $qtPlugins)) { $qtPlugins = "D:\seer\3dmaster\qt6\6.8.2\msvc2022_64\plugins" }
 
 $occtBin = Join-Path $projectRoot "occt\win64\vc14\bin"
