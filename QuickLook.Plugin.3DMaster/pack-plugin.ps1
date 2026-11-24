@@ -88,9 +88,7 @@ Set-Content -Path "$distDir\qt.conf" -Value "[Paths]`nPrefix=.`nPlugins=.`n" -En
 
 Write-Host "[5/6] Copying OpenCASCADE 8.0 & TBB multithreading runtime closure..."
 Get-ChildItem -Path $occtBin -Filter "*.dll" | ForEach-Object {
-    if ($_.Name -notmatch "d\.dll$") {
-        Copy-Item $_.FullName "$distDir\" -Force
-    }
+    Copy-Item $_.FullName "$distDir\" -Force
 }
 
 Write-Host "[6/6] Generating archives with .NET ZipFile API..."
