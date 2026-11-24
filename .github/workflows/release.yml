@@ -95,4 +95,5 @@ jobs:
                    "2. **Manual / Portable (.zip):** Download ``QuickLook.Plugin.ThreeDMaster_Portable.zip`` and extract it into your QuickLook plugin directory.`n" +
                    "3. Restart QuickLook."
 
-          gh release create $tag QuickLook.Plugin.ThreeDMaster.qlplugin QuickLook.Plugin.ThreeDMaster_Portable.zip --title "3dmaster-quicklook $tag (Full OCCT Edition)" --notes "$notes" --clobber
+          gh release delete $tag --yes 2>$null
+          gh release create $tag QuickLook.Plugin.ThreeDMaster.qlplugin QuickLook.Plugin.ThreeDMaster_Portable.zip --title "3dmaster-quicklook $tag (Full OCCT Edition)" --notes "$notes"
