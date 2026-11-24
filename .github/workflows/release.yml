@@ -44,6 +44,18 @@ jobs:
           Expand-Archive -Path $nestedZip.FullName -DestinationPath "occt"
           Remove-Item -Path "temp_occt", "occt-combined.zip" -Recurse -Force
 
+          # If extracted into a subfolder like occt/opencascade-8.0.0-..., flatten to occt/
+          if (-not (Test-Path "occt/inc")) {
+            $foundInc = Get-ChildItem -Path "occt" -Recurse -Directory -Filter "inc" | Select-Object -First 1
+            if ($foundInc) {
+              $parentDir = $foundInc.Parent.FullName
+              Write-Host "Flattening OCCT from $parentDir to occt/..."
+              Get-ChildItem -Path $parentDir | ForEach-Object {
+                Move-Item $_.FullName "occt/" -Force
+              }
+            }
+          }
+
           if (-not (Test-Path "occt/inc")) { throw "occt/inc directory missing after extraction!" }
           if (-not (Test-Path "occt/win64/vc14/lib")) { throw "occt/win64/vc14/lib directory missing after extraction!" }
           if (-not (Test-Path "occt/win64/vc14/bin")) { throw "occt/win64/vc14/bin directory missing after extraction!" }
