@@ -87,21 +87,10 @@ if (Test-Path (Join-Path $qtPlugins "styles\qmodernwindowsstyle.dll")) {
 Set-Content -Path "$distDir\qt.conf" -Value "[Paths]`nPrefix=.`nPlugins=.`n" -Encoding ASCII
 
 Write-Host "[5/6] Copying OpenCASCADE 8.0 & TBB multithreading runtime closure..."
-$occtDlls = @(
-    "avcodec-57.dll", "avformat-57.dll", "avutil-55.dll", "FreeImage.dll", "freetype.dll",
-    "jemalloc.dll", "openvr_api.dll", "swscale-4.dll",
-    "tbb12.dll", "tbbmalloc.dll", "tbbmalloc_proxy.dll",
-    "zlib.dll", "zlib1.dll", "liblzma.dll",
-    "TKBO.dll", "TKBool.dll", "TKBRep.dll", "TKCAF.dll", "TKCDF.dll", "TKDE.dll", "TKDEGLTF.dll",
-    "TKDEIGES.dll", "TKDESTEP.dll", "TKernel.dll", "TKG2d.dll", "TKG3d.dll",
-    "TKGeomAlgo.dll", "TKGeomBase.dll", "TKHLR.dll", "TKLCAF.dll", "TKMath.dll",
-    "TKMesh.dll", "TKPrim.dll", "TKRWMesh.dll", "TKService.dll", "TKShHealing.dll",
-    "TKTopAlgo.dll", "TKV3d.dll", "TKVCAF.dll", "TKXCAF.dll", "TKXSBase.dll"
-)
-foreach ($o in $occtDlls) {
-    $src = Join-Path $occtBin $o
-    if (-not (Test-Path $src)) { throw "Missing OCCT DLL: $src" }
-    Copy-Item $src "$distDir\" -Force
+Get-ChildItem -Path $occtBin -Filter "*.dll" | ForEach-Object {
+    if ($_.Name -notmatch "d\.dll$") {
+        Copy-Item $_.FullName "$distDir\" -Force
+    }
 }
 
 Write-Host "[6/6] Generating archives with .NET ZipFile API..."
