@@ -202,8 +202,13 @@ static void storeModelToCache(const QString& path, const ModelDataPtr& model) {
             break;
         }
     }
-    // 插入队首
-    g_modelCacheList.push_front({ key, model });
+    // 插入队首：缓存必须持有独立副本——显示层在 GPU 上传后会原地清空所显示模型的
+    // vertices/indices 省内存；若与缓存共用同一批 SubMesh，第二次打开命中缓存时
+    // 拿到的将是几何已被掏空的壳，场景空白。detach() 令副本拥有自己的 SubMesh
+    // 数组（元素内的 QVector 仍共享，但显示层 clear 时会触发写时复制、不会伤及缓存）。
+    auto cacheCopy = std::make_shared<ModelData>(*model);
+    cacheCopy->meshes.detach();
+    g_modelCacheList.push_front({ key, cacheCopy });
     while (g_modelCacheList.size() > MAX_CACHED_MODELS) {
         g_modelCacheList.pop_back();
     }
@@ -332,6 +337,7 @@ ModelDataPtr ModelLoaderWorker::parseModel(const QString& path) {
     if (cachedModel) {
         // 创建浅拷贝壳体 (QVector 隐式共享，几何数据零拷贝，独立保留本次路径与独立显隐状态)
         auto cloned = std::make_shared<ModelData>(*cachedModel);
+        cloned->meshes.detach(); // 交给显示层的副本须拥有自己的 SubMesh 数组，避免显示层清空几何时反噬缓存
         cloned->filePath = m_filePath;
         return cloned;
     }
