@@ -251,10 +251,13 @@ namespace QuickLook.Plugin.ThreeDMaster
                 throw new FileNotFoundException($"Cannot locate 3dmaster-preview.exe at '{exePath}'");
             }
 
+            string uiLang = System.Globalization.CultureInfo.CurrentUICulture.Name;
+            if (string.IsNullOrWhiteSpace(uiLang)) uiLang = "auto";
+
             var psi = new ProcessStartInfo
             {
                 FileName = exePath,
-                Arguments = $"--pipe {PipeName}",
+                Arguments = $"--pipe {PipeName} --lang {uiLang}",
                 WorkingDirectory = Path.GetDirectoryName(exePath),
                 UseShellExecute = false,
                 CreateNoWindow = true

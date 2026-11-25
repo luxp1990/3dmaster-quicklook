@@ -1,4 +1,5 @@
 #include "master_sidebar.h"
+#include "i18n.h"
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QFileInfo>
@@ -121,19 +122,19 @@ void MasterSidebar::setupUI() {
     outerLayout->addWidget(scrollArea);
 
     // 1. 相机视角组
-    auto grpCamera = new QGroupBox("相机视角", this);
+    auto grpCamera = new QGroupBox(master_i18n::tr("相机视角", "Camera Views"), this);
     auto camLayout = new QGridLayout(grpCamera);
     camLayout->setContentsMargins(8, 12, 8, 8);
     camLayout->setSpacing(6);
 
-    auto btnFront = new QPushButton("前视", grpCamera);
-    auto btnBack = new QPushButton("后视", grpCamera);
-    auto btnLeft = new QPushButton("左视", grpCamera);
-    auto btnRight = new QPushButton("右视", grpCamera);
-    auto btnTop = new QPushButton("俯视", grpCamera);
-    auto btnBtm = new QPushButton("仰视", grpCamera);
-    m_btnFit = new QPushButton("适应窗口 (Ctrl+F)", grpCamera);
-    auto btnReset = new QPushButton("重置视角 (R)", grpCamera);
+    auto btnFront = new QPushButton(master_i18n::tr("前视", "Front"), grpCamera);
+    auto btnBack = new QPushButton(master_i18n::tr("后视", "Back"), grpCamera);
+    auto btnLeft = new QPushButton(master_i18n::tr("左视", "Left"), grpCamera);
+    auto btnRight = new QPushButton(master_i18n::tr("右视", "Right"), grpCamera);
+    auto btnTop = new QPushButton(master_i18n::tr("俯视", "Top"), grpCamera);
+    auto btnBtm = new QPushButton(master_i18n::tr("仰视", "Bottom"), grpCamera);
+    m_btnFit = new QPushButton(master_i18n::tr("适应窗口 (Ctrl+F)", "Fit to Window (Ctrl+F)"), grpCamera);
+    auto btnReset = new QPushButton(master_i18n::tr("重置视角 (R)", "Reset View (R)"), grpCamera);
 
     camLayout->addWidget(btnFront, 0, 0);
     camLayout->addWidget(btnBack, 0, 1);
@@ -156,18 +157,18 @@ void MasterSidebar::setupUI() {
     mainLayout->addWidget(grpCamera);
 
     // 2. 交互操作手感模式 (UG / SolidWorks / 通用)
-    auto grpNav = new QGroupBox("交互操作手感", this);
+    auto grpNav = new QGroupBox(master_i18n::tr("交互操作手感", "Navigation Preset"), this);
     auto navLayout = new QVBoxLayout(grpNav);
     navLayout->setContentsMargins(8, 12, 8, 8);
     navLayout->setSpacing(6);
 
     m_comboNavPreset = new QComboBox(grpNav);
-    m_comboNavPreset->addItem("📐 西门子 UG (Siemens NX)", static_cast<int>(MasterWidget::NavigationPreset::UG_NX));
+    m_comboNavPreset->addItem(master_i18n::tr("📐 西门子 UG (Siemens NX)", "📐 Siemens NX (UG)"), static_cast<int>(MasterWidget::NavigationPreset::UG_NX));
     m_comboNavPreset->addItem("🔧 SolidWorks", static_cast<int>(MasterWidget::NavigationPreset::SolidWorks));
-    m_comboNavPreset->addItem("🖱️ 经典通用 (Generic)", static_cast<int>(MasterWidget::NavigationPreset::DefaultGeneric));
-    m_comboNavPreset->setToolTip("选择 3D 视口交互控制手感习惯");
+    m_comboNavPreset->addItem(master_i18n::tr("🖱️ 经典通用 (Generic)", "🖱️ Generic"), static_cast<int>(MasterWidget::NavigationPreset::DefaultGeneric));
+    m_comboNavPreset->setToolTip(master_i18n::tr("选择 3D 视口交互控制手感习惯", "Select 3D viewport mouse navigation preset"));
 
-    auto lblNavTip = new QLabel("中键旋转 · 左键平移 · 滚轮光标对心", grpNav);
+    auto lblNavTip = new QLabel(master_i18n::tr("中键旋转 · 左键平移 · 滚轮光标对心", "MMB Orbit · LMB Pan · Wheel Zoom at Cursor"), grpNav);
     lblNavTip->setStyleSheet("color: #9CA3AF; font-size: 11px;");
     lblNavTip->setWordWrap(true);
 
@@ -175,11 +176,11 @@ void MasterSidebar::setupUI() {
         Q_UNUSED(index);
         auto preset = static_cast<MasterWidget::NavigationPreset>(m_comboNavPreset->currentData().toInt());
         if (preset == MasterWidget::NavigationPreset::UG_NX) {
-            lblNavTip->setText("中键旋转 · 左键平移 · 滚轮光标对心");
+            lblNavTip->setText(master_i18n::tr("中键旋转 · 左键平移 · 滚轮光标对心", "MMB Orbit · LMB Pan · Wheel Zoom at Cursor"));
         } else if (preset == MasterWidget::NavigationPreset::SolidWorks) {
-            lblNavTip->setText("中键旋转 · Ctrl+中键平移 · 滚轮缩放");
+            lblNavTip->setText(master_i18n::tr("中键旋转 · Ctrl+中键平移 · 滚轮缩放", "MMB Orbit · Ctrl+MMB Pan · Wheel Zoom"));
         } else {
-            lblNavTip->setText("左键旋转 · 右键平移 · 滚轮缩放");
+            lblNavTip->setText(master_i18n::tr("左键旋转 · 右键平移 · 滚轮缩放", "LMB Orbit · RMB Pan · Wheel Zoom"));
         }
         emit sigNavigationPresetChanged(preset);
     });
@@ -189,54 +190,54 @@ void MasterSidebar::setupUI() {
     mainLayout->addWidget(grpNav);
 
     // 2. 材质与色彩渲染组
-    auto grpShading = new QGroupBox("材质与色彩渲染", this);
+    auto grpShading = new QGroupBox(master_i18n::tr("材质与色彩渲染", "Shading & Colors"), this);
     auto shadeLayout = new QVBoxLayout(grpShading);
     shadeLayout->setContentsMargins(8, 12, 8, 8);
     shadeLayout->setSpacing(8);
 
     m_comboShading = new QComboBox(grpShading);
-    m_comboShading->addItem("🎨 固有材质色彩 (Material)", 0);
-    m_comboShading->addItem("🌈 顶点颜色 (Vertex Color)", 1);
-    m_comboShading->addItem("⚪ 工业白模 (Pure White)", 2);
-    m_comboShading->addItem("🧭 几何法线 (Normals)", 3);
+    m_comboShading->addItem(master_i18n::tr("🎨 固有材质色彩 (Material)", "🎨 Material Color"), 0);
+    m_comboShading->addItem(master_i18n::tr("🌈 顶点颜色 (Vertex Color)", "🌈 Vertex Color"), 1);
+    m_comboShading->addItem(master_i18n::tr("⚪ 工业白模 (Pure White)", "⚪ Pure White"), 2);
+    m_comboShading->addItem(master_i18n::tr("🧭 几何法线 (Normals)", "🧭 Normals"), 3);
 
     connect(m_comboShading, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
         emit sigShadingModeChanged(static_cast<MasterWidget::ShadingMode>(index));
     });
     shadeLayout->addWidget(m_comboShading);
 
-    m_chkOrtho = new QCheckBox("正交投影模式", grpShading);
+    m_chkOrtho = new QCheckBox(master_i18n::tr("正交投影模式", "Orthographic Projection"), grpShading);
     connect(m_chkOrtho, &QCheckBox::toggled, this, &MasterSidebar::sigOrthographic);
     shadeLayout->addWidget(m_chkOrtho);
 
     mainLayout->addWidget(grpShading);
 
     // 3. 辅助显示元素组
-    auto grpDisplay = new QGroupBox("辅助显示", this);
+    auto grpDisplay = new QGroupBox(master_i18n::tr("辅助显示", "Display Aids"), this);
     auto dispLayout = new QVBoxLayout(grpDisplay);
     dispLayout->setContentsMargins(8, 12, 8, 8);
     dispLayout->setSpacing(8);
 
-    m_chkGrid = new QCheckBox("地面网格标尺", grpDisplay);
+    m_chkGrid = new QCheckBox(master_i18n::tr("地面网格标尺", "Ground Grid"), grpDisplay);
     m_chkGrid->setChecked(true);
     connect(m_chkGrid, &QCheckBox::toggled, this, &MasterSidebar::sigShowGrid);
     dispLayout->addWidget(m_chkGrid);
 
-    m_chkAxis = new QCheckBox("3D 空间坐标轴", grpDisplay);
+    m_chkAxis = new QCheckBox(master_i18n::tr("3D 空间坐标轴", "3D Axes"), grpDisplay);
     m_chkAxis->setChecked(true);
     connect(m_chkAxis, &QCheckBox::toggled, this, &MasterSidebar::sigShowAxis);
     dispLayout->addWidget(m_chkAxis);
 
-    m_chkWireframe = new QCheckBox("网格三角线框", grpDisplay);
+    m_chkWireframe = new QCheckBox(master_i18n::tr("网格三角线框", "Wireframe"), grpDisplay);
     connect(m_chkWireframe, &QCheckBox::toggled, this, &MasterSidebar::sigShowWireframe);
     dispLayout->addWidget(m_chkWireframe);
 
-    m_chkFeatureEdges = new QCheckBox("特征棱线 (CAD Edges)", grpDisplay);
+    m_chkFeatureEdges = new QCheckBox(master_i18n::tr("特征棱线 (CAD Edges)", "CAD Feature Edges"), grpDisplay);
     m_chkFeatureEdges->setChecked(true);
     connect(m_chkFeatureEdges, &QCheckBox::toggled, this, &MasterSidebar::sigShowFeatureEdges);
     dispLayout->addWidget(m_chkFeatureEdges);
 
-    m_chkBoundingBox = new QCheckBox("三维尺寸包围盒", grpDisplay);
+    m_chkBoundingBox = new QCheckBox(master_i18n::tr("三维尺寸包围盒", "Bounding Box"), grpDisplay);
     m_chkBoundingBox->setChecked(false);
     connect(m_chkBoundingBox, &QCheckBox::toggled, this, &MasterSidebar::sigShowBoundingBox);
     dispLayout->addWidget(m_chkBoundingBox);
@@ -244,19 +245,19 @@ void MasterSidebar::setupUI() {
     mainLayout->addWidget(grpDisplay);
 
     // 4. 动态剖视控制组 (Section View)
-    auto grpSection = new QGroupBox("动态剖视 (Section View)", this);
+    auto grpSection = new QGroupBox(master_i18n::tr("动态剖视 (Section View)", "Section View"), this);
     auto secLayout = new QVBoxLayout(grpSection);
     secLayout->setContentsMargins(8, 12, 8, 8);
     secLayout->setSpacing(6);
 
-    m_chkSectionEnabled = new QCheckBox("启用截面剖切", grpSection);
+    m_chkSectionEnabled = new QCheckBox(master_i18n::tr("启用截面剖切", "Enable Section Plane"), grpSection);
     connect(m_chkSectionEnabled, &QCheckBox::toggled, this, &MasterSidebar::sigSectionEnabled);
     secLayout->addWidget(m_chkSectionEnabled);
 
     m_comboSectionAxis = new QComboBox(grpSection);
-    m_comboSectionAxis->addItem("📐 垂直 Y 轴 (水平剖切)", 1);
-    m_comboSectionAxis->addItem("📐 垂直 X 轴 (左右剖切)", 0);
-    m_comboSectionAxis->addItem("📐 垂直 Z 轴 (前后剖切)", 2);
+    m_comboSectionAxis->addItem(master_i18n::tr("📐 垂直 Y 轴 (水平剖切)", "📐 Y-Axis (Horizontal)"), 1);
+    m_comboSectionAxis->addItem(master_i18n::tr("📐 垂直 X 轴 (左右剖切)", "📐 X-Axis (Left-Right)"), 0);
+    m_comboSectionAxis->addItem(master_i18n::tr("📐 垂直 Z 轴 (前后剖切)", "📐 Z-Axis (Front-Back)"), 2);
     connect(m_comboSectionAxis, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
         Q_UNUSED(index);
         emit sigSectionAxisChanged(m_comboSectionAxis->currentData().toInt());
@@ -264,7 +265,7 @@ void MasterSidebar::setupUI() {
     secLayout->addWidget(m_comboSectionAxis);
 
     auto depthHeader = new QHBoxLayout();
-    auto lblDepthTitle = new QLabel("剖切深度:", grpSection);
+    auto lblDepthTitle = new QLabel(master_i18n::tr("剖切深度:", "Section Depth:"), grpSection);
     lblDepthTitle->setStyleSheet("color: #9CA3AF; font-size: 11px;");
     m_lblSectionDepth = new QLabel("50%", grpSection);
     m_lblSectionDepth->setStyleSheet("color: #38BDF8; font-size: 11px; font-weight: bold;");
@@ -305,16 +306,16 @@ void MasterSidebar::setupUI() {
     mainLayout->addWidget(grpSection);
 
     // 5. 装配体组件列表组 (Assembly Components)
-    m_grpAssembly = new QGroupBox("装配体组件清单", this);
+    m_grpAssembly = new QGroupBox(master_i18n::tr("装配体组件清单", "Assembly Tree"), this);
     auto assemLayout = new QVBoxLayout(m_grpAssembly);
     assemLayout->setContentsMargins(6, 12, 6, 6);
     assemLayout->setSpacing(6);
 
     auto btnBar = new QHBoxLayout();
     btnBar->setSpacing(4);
-    m_btnShowAll = new QPushButton("全显", m_grpAssembly);
-    m_btnHideAll = new QPushButton("全隐", m_grpAssembly);
-    m_btnInvert = new QPushButton("反选", m_grpAssembly);
+    m_btnShowAll = new QPushButton(master_i18n::tr("全显", "Show All"), m_grpAssembly);
+    m_btnHideAll = new QPushButton(master_i18n::tr("全隐", "Hide All"), m_grpAssembly);
+    m_btnInvert = new QPushButton(master_i18n::tr("反选", "Invert"), m_grpAssembly);
 
     m_btnShowAll->setStyleSheet("font-size: 11px; padding: 2px 4px; min-height: 20px;");
     m_btnHideAll->setStyleSheet("font-size: 11px; padding: 2px 4px; min-height: 20px;");
@@ -413,7 +414,7 @@ void MasterSidebar::setupUI() {
 
         if (curItem) {
             int partId = curItem->data(0, Qt::UserRole).toInt();
-            auto* actIsolate = menu.addAction("👁 仅显示此零件 (隔离模式)");
+            auto* actIsolate = menu.addAction(master_i18n::tr("👁 仅显示此零件 (隔离模式)", "👁 Isolate Part"));
             connect(actIsolate, &QAction::triggered, this, [this, partId, curItem]() {
                 QSignalBlocker blocker(m_treeAssembly);
                 for (int i = 0; i < m_treeAssembly->topLevelItemCount(); ++i) {
@@ -426,13 +427,13 @@ void MasterSidebar::setupUI() {
             menu.addSeparator();
         }
 
-        auto* actAllShow = menu.addAction("✔ 全部显示");
+        auto* actAllShow = menu.addAction(master_i18n::tr("✔ 全部显示", "✔ Show All"));
         connect(actAllShow, &QAction::triggered, m_btnShowAll, &QPushButton::click);
 
-        auto* actAllHide = menu.addAction("✖ 全部隐藏");
+        auto* actAllHide = menu.addAction(master_i18n::tr("✖ 全部隐藏", "✖ Hide All"));
         connect(actAllHide, &QAction::triggered, m_btnHideAll, &QPushButton::click);
 
-        auto* actInvert = menu.addAction("🔄 反选");
+        auto* actInvert = menu.addAction(master_i18n::tr("🔄 反选", "🔄 Invert Selection"));
         connect(actInvert, &QAction::triggered, m_btnInvert, &QPushButton::click);
 
         menu.exec(m_treeAssembly->viewport()->mapToGlobal(pos));
@@ -442,16 +443,16 @@ void MasterSidebar::setupUI() {
     mainLayout->addWidget(m_grpAssembly);
 
     // 6. 模型信息面板
-    auto grpStats = new QGroupBox("模型资产信息", this);
+    auto grpStats = new QGroupBox(master_i18n::tr("模型资产信息", "Model Info"), this);
     auto statsLayout = new QVBoxLayout(grpStats);
     statsLayout->setContentsMargins(8, 12, 8, 8);
     statsLayout->setSpacing(4);
 
-    m_lblName = new QLabel("名称: -", grpStats);
-    m_lblFormat = new QLabel("格式: -", grpStats);
-    m_lblVerts = new QLabel("顶点数: -", grpStats);
-    m_lblFaces = new QLabel("面片数: -", grpStats);
-    m_lblSize = new QLabel("包围盒: -", grpStats);
+    m_lblName = new QLabel(master_i18n::tr("名称: -", "Name: -"), grpStats);
+    m_lblFormat = new QLabel(master_i18n::tr("格式: -", "Format: -"), grpStats);
+    m_lblVerts = new QLabel(master_i18n::tr("顶点数: -", "Vertices: -"), grpStats);
+    m_lblFaces = new QLabel(master_i18n::tr("面片数: -", "Triangles: -"), grpStats);
+    m_lblSize = new QLabel(master_i18n::tr("包围盒: -", "Size: -"), grpStats);
 
     m_lblName->setStyleSheet("color: #38BDF8; font-weight: bold;");
     m_lblName->setWordWrap(true);
@@ -474,22 +475,22 @@ void MasterSidebar::updateModelStats(ModelDataPtr model) {
     if (!model) return;
 
     QString fileName = QFileInfo(model->filePath).fileName();
-    m_lblName->setText(QString("名称: %1").arg(fileName));
+    m_lblName->setText(master_i18n::tr("名称: %1", "Name: %1").arg(fileName));
     m_lblName->setToolTip(model->filePath);
 
-    m_lblFormat->setText(QString("格式: %1").arg(model->format.toUpper()));
-    m_lblVerts->setText(QString("顶点数: %1").arg(QLocale().toString(static_cast<qulonglong>(model->totalVertices))));
-    m_lblFaces->setText(QString("面片数: %1").arg(QLocale().toString(static_cast<qulonglong>(model->totalTriangles))));
+    m_lblFormat->setText(master_i18n::tr("格式: %1", "Format: %1").arg(model->format.toUpper()));
+    m_lblVerts->setText(master_i18n::tr("顶点数: %1", "Vertices: %1").arg(QLocale().toString(static_cast<qulonglong>(model->totalVertices))));
+    m_lblFaces->setText(master_i18n::tr("面片数: %1", "Triangles: %1").arg(QLocale().toString(static_cast<qulonglong>(model->totalTriangles))));
 
     QVector3D sz = model->boundsMax - model->boundsMin;
-    m_lblSize->setText(QString("尺寸: %1 × %2 × %3")
+    m_lblSize->setText(master_i18n::tr("尺寸: %1 × %2 × %3", "Size: %1 × %2 × %3")
                            .arg(sz.x(), 0, 'f', 1)
                            .arg(sz.y(), 0, 'f', 1)
                            .arg(sz.z(), 0, 'f', 1));
 
     if (model->partNames.size() > 1) {
         m_grpAssembly->setVisible(true);
-        m_grpAssembly->setTitle(QString("装配体组件 (%1)").arg(model->partNames.size()));
+        m_grpAssembly->setTitle(master_i18n::tr("装配体组件 (%1)", "Assembly Parts (%1)").arg(model->partNames.size()));
 
         QSignalBlocker blocker(m_treeAssembly);
         m_treeAssembly->clear();
@@ -516,8 +517,8 @@ void MasterSidebar::updateModelStats(ModelDataPtr model) {
             p.end();
 
             item->setIcon(0, QIcon(pix));
-            item->setText(0, QString("%1 (%2面)").arg(name).arg(tris));
-            item->setToolTip(0, QString("零件 ID: %1\n名称: %2\n三角面数: %3\n右键可进行隔离显示").arg(partId).arg(name).arg(tris));
+            item->setText(0, master_i18n::tr("%1 (%2面)", "%1 (%2 tris)").arg(name).arg(tris));
+            item->setToolTip(0, master_i18n::tr("零件 ID: %1\n名称: %2\n三角面数: %3\n右键可进行隔离显示", "Part ID: %1\nName: %2\nTriangles: %3\nRight-click to isolate").arg(partId).arg(name).arg(tris));
         }
     } else {
         m_grpAssembly->setVisible(false);

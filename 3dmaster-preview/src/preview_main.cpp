@@ -7,6 +7,7 @@
 
 #include "preview_window.h"
 #include "ipc_server.h"
+#include "i18n.h"
 
 int main(int argc, char* argv[]) {
     // 启用高分屏缩放自适应
@@ -32,7 +33,13 @@ int main(int argc, char* argv[]) {
         "Idle timeout in seconds before auto-quitting (0 to disable, default: 600s / 10min).", "seconds", "600");
     parser.addOption(idleTimeoutOption);
 
+    QCommandLineOption langOption(QStringList() << "lang",
+        "UI language code (e.g. zh-CN, en-US, auto).", "lang", "auto");
+    parser.addOption(langOption);
+
     parser.process(app);
+
+    master_i18n::initLanguage(QString(), parser.value(langOption));
 
     QString pipeName = parser.value(pipeOption);
     if (pipeName.isEmpty()) {

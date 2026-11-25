@@ -1,4 +1,5 @@
 #include "master_widget.h"
+#include "i18n.h"
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QKeyEvent>
@@ -478,7 +479,7 @@ void MasterWidget::initShaders() {
 
     m_shadersValid = (ok1 && ok2);
     if (!m_shadersValid) {
-        setErrorMessage("OpenGL 着色器编译或链接失败，请检查显卡驱动环境");
+        setErrorMessage(master_i18n::tr("OpenGL 着色器编译或链接失败，请检查显卡驱动环境", "OpenGL shader compilation/linking failed. Please check your graphics driver."));
     }
 }
 
@@ -1295,14 +1296,14 @@ void MasterWidget::drawLoadingSpinner(QPainter& painter) {
     font.setBold(true);
     painter.setFont(font);
 
-    QString text = m_loadingStatus.isEmpty() ? "正在异步解析 3D 模型..." : m_loadingStatus;
+    QString text = m_loadingStatus.isEmpty() ? master_i18n::tr("正在异步解析 3D 模型...", "Loading 3D model asynchronously...") : m_loadingStatus;
     painter.drawText(QRect(0, cy + 45, width(), 30), Qt::AlignCenter, text);
 
     font.setPointSize(10);
     font.setBold(false);
     painter.setFont(font);
     painter.setPen(QColor(150, 165, 185));
-    painter.drawText(QRect(0, cy + 75, width(), 25), Qt::AlignCenter, "按 Esc 键可立即中止加载");
+    painter.drawText(QRect(0, cy + 75, width(), 25), Qt::AlignCenter, master_i18n::tr("按 Esc 键可立即中止加载", "Press Esc to cancel loading"));
 }
 
 void MasterWidget::drawErrorMessage(QPainter& painter) {
@@ -1334,7 +1335,7 @@ void MasterWidget::drawErrorMessage(QPainter& painter) {
     titleFont.setBold(true);
     painter.setFont(titleFont);
     painter.setPen(QColor(245, 247, 250));
-    painter.drawText(QRect(20, cy + 45, width() - 40, 28), Qt::AlignCenter, "模型加载提示");
+    painter.drawText(QRect(20, cy + 45, width() - 40, 28), Qt::AlignCenter, master_i18n::tr("模型加载提示", "Model Loading Notice"));
 
     // 详细信息 (支持自适应多行 CAD 专业指导面板)
     QFont msgFont = painter.font();

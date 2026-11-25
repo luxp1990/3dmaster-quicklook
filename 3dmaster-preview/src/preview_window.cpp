@@ -1,5 +1,6 @@
 #include <QtCore/qt_windows.h>
 #include "preview_window.h"
+#include "i18n.h"
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QDebug>
@@ -206,7 +207,7 @@ void PreviewWindow::loadModel(uint64_t genId, const QString& path) {
     m_currentPath = path;
 
     if (m_widget) {
-        m_widget->setLoading(true, "正在准备解析 3D 几何数据...");
+        m_widget->setLoading(true, master_i18n::tr("正在准备解析 3D 几何数据...", "Preparing to parse 3D geometry..."));
     }
 
     m_workerThread = new QThread();

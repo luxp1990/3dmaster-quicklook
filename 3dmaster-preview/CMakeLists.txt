@@ -37,6 +37,7 @@ set(SOURCES
 )
 
 set(HEADERS
+    include/i18n.h
     include/preview_window.h
     include/ipc_server.h
     include/master_widget.h

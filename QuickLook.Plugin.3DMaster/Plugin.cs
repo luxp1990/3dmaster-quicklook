@@ -109,16 +109,23 @@ namespace QuickLook.Plugin.ThreeDMaster
                         disp?.BeginInvoke(new Action(() =>
                         {
                             context.IsBusy = false;
-                            context.Title = $"{Path.GetFileName(path)} (3dmaster 预览引擎启动失败，请检查运行库)";
+                            bool isZh = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName
+                                .Equals("zh", StringComparison.OrdinalIgnoreCase);
+                            string errText = isZh
+                                ? "3dmaster 预览引擎启动失败，请检查运行库"
+                                : "3dmaster preview engine failed to start, please check runtime libraries";
+                            context.Title = $"{Path.GetFileName(path)} ({errText})";
                         }));
                     }
                 });
             }
             catch (Exception ex)
             {
+                bool isZh = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName
+                    .Equals("zh", StringComparison.OrdinalIgnoreCase);
                 context.ViewerContent = new System.Windows.Controls.Label
                 {
-                    Content = $"3dmaster 启动异常: {ex.Message}",
+                    Content = isZh ? $"3dmaster 启动异常: {ex.Message}" : $"3dmaster startup error: {ex.Message}",
                     HorizontalAlignment = HorizontalAlignment.Center,
                     VerticalAlignment = VerticalAlignment.Center
                 };
