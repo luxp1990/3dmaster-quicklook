@@ -163,8 +163,8 @@ void PreviewWindow::cancelCurrentLoad() {
     if (m_workerThread && m_workerThread->isRunning()) {
         m_workerThread->requestInterruption();
         m_workerThread->quit();
-        if (!m_workerThread->wait(1500)) {
-            qWarning() << "[PreviewWindow] Worker thread did not finish within 1500ms, detaching";
+        if (!m_workerThread->wait(5000)) {
+            qWarning() << "[PreviewWindow] Worker thread did not finish within 5000ms, detaching";
         }
     }
     m_worker = nullptr;
@@ -232,6 +232,11 @@ void PreviewWindow::loadModel(uint64_t genId, const QString& path) {
         if (genId != m_currentGenId) return;
         onModelLoadFailed(err);
     });
+
+    // A10: 加载结束（成功或失败）都要退出 worker 线程的事件循环，
+    // 否则线程会一直空转到下一次预览把它取消掉为止
+    connect(m_worker, &ModelLoaderWorker::sigFinished, m_workerThread, &QThread::quit);
+    connect(m_worker, &ModelLoaderWorker::sigFailed, m_workerThread, &QThread::quit);
 
     connect(m_workerThread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(m_workerThread, &QThread::finished, m_workerThread, &QObject::deleteLater);
