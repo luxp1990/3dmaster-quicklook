@@ -321,6 +321,11 @@ namespace QuickLook.Plugin.ThreeDMaster
                 _lastAttachHwnd = IntPtr.Zero;
                 _lastLoadPath = null;
                 _lastLoadGenId = 0;
+                if (_state != DaemonConnectionState.Connected)
+                {
+                    // 未连接时没有可清的远端状态，不要为了发 CLEAR 反而把守护进程重新拉起来
+                    return;
+                }
             }
             SendCommand("CLEAR");
         }

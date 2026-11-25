@@ -144,7 +144,10 @@ void IpcServer::sendLoaded(uint64_t genId, bool ok, const QString& errorMsg) {
         if (ok) {
             msg = QString("LOADED %1 OK\n").arg(genId);
         } else {
-            msg = QString("LOADED %1 ERROR %2\n").arg(genId).arg(errorMsg);
+            // 行协议：错误文本里的换行必须剥掉，否则会把一帧顶成两帧
+            QString safeError = errorMsg;
+            safeError.replace('\r', ' ').replace('\n', ' ');
+            msg = QString("LOADED %1 ERROR %2\n").arg(genId).arg(safeError);
         }
         m_clientSocket->write(msg.toUtf8());
         m_clientSocket->flush();
