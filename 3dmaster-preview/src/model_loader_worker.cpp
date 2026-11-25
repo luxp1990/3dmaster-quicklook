@@ -90,7 +90,12 @@ private:
 #include <DEGLTF_ConfigurationNode.hxx>
 
 // Qt 3MF Reader (ZIP + XML)
+// QZipReader 私有头在 Qt 6.6 起位于 QtCore，之前位于 QtGui（Ubuntu 24.04 的 Qt 6.4 仍是后者）
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
 #include <QtCore/private/qzipreader_p.h>
+#else
+#include <QtGui/private/qzipreader_p.h>
+#endif
 #include <QXmlStreamReader>
 #include <QColor>
 #include <QMatrix4x4>
@@ -2999,21 +3004,13 @@ bool ModelLoaderWorker::parsePRT(const QString& path, ModelDataPtr outModel) {
         }
     } else if (isCreo) {
         hintMsg = master_i18n::tr(
-                "检测到【%1】专有零件格式 (.prt)
-"
-                "此格式为 PTC 私有闭源参数化模型文件
-
-"
-                "💡 快速预览建议：
-"
+                "检测到【%1】专有零件格式 (.prt)\n"
+                "此格式为 PTC 私有闭源参数化模型文件\n\n"
+                "💡 快速预览建议：\n"
                 "请在 Creo 中导出为 STEP (.stp) 工业中性格式，即可在 3dmaster 中完整呈现",
-                "Detected proprietary [%1] part format (.prt)
-"
-                "This is a closed PTC parametric model file.
-
-"
-                "💡 Quick Preview Tip:
-"
+                "Detected proprietary [%1] part format (.prt)\n"
+                "This is a closed PTC parametric model file.\n\n"
+                "💡 Quick Preview Tip:\n"
                 "Export as STEP (.stp) in Creo to view the full model in 3dmaster."
             ).arg(cadVendor);
     } else {
