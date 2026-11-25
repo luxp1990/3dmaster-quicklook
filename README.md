@@ -10,6 +10,9 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011%20(x64)-brightgreen.svg)]()
 [![Language](https://img.shields.io/badge/UI-中文%20%7C%20English-informational.svg)]()
 
+> 🧭 **找核心代码？** 解析器、模型数据与 OpenGL 渲染的共享核心已迁移至 **[3dmaster-core](https://github.com/luxp1990/3dmaster-core)**，本仓只保留 QuickLook 宿主外壳（预览窗口、IPC、C# 插件壳），并以 git submodule 引用 core。下载安装包仍在本仓 [Releases](https://github.com/luxp1990/3dmaster-quicklook/releases) 里。
+> **Looking for the core code?** The shared core (parsers, model data, OpenGL renderer) now lives in **[3dmaster-core](https://github.com/luxp1990/3dmaster-core)**; this repo keeps only the QuickLook host shell and consumes the core as a git submodule. Downloads remain in this repo's [Releases](https://github.com/luxp1990/3dmaster-quicklook/releases).
+
 ---
 
 ## 💡 为什么做这个项目？

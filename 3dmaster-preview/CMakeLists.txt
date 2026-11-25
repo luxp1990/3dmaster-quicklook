@@ -26,31 +26,27 @@ include_directories(
     "${OCCT_DIR}/inc"
 )
 
-# 源码清单：独立 Preview 源码与 3D 渲染核心
+# 源码清单：独立 Preview 外壳源码（3D 渲染核心在 3dmaster-core submodule）
 set(SOURCES
     src/preview_main.cpp
     src/preview_window.cpp
     src/ipc_server.cpp
-    src/master_widget.cpp
-    src/master_sidebar.cpp
-    src/model_loader_worker.cpp
 )
 
 set(HEADERS
-    include/i18n.h
     include/preview_window.h
     include/ipc_server.h
-    include/master_widget.h
-    include/master_sidebar.h
-    include/model_loader_worker.h
-    include/model_data.h
 )
+
+# 共享核心 (3dmaster-core, git submodule at repo-root core/): 解析器/模型数据/GL 渲染/侧边栏/i18n 的唯一真相源
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../core" "${CMAKE_CURRENT_BINARY_DIR}/3dmaster_core")
 
 add_executable(3dmaster-preview WIN32 ${SOURCES} ${HEADERS})
 
 target_link_directories(3dmaster-preview PRIVATE "${OCCT_DIR}/win64/vc14/lib")
 
 target_link_libraries(3dmaster-preview PRIVATE
+    3dmaster_core
     Qt6::Core
     Qt6::CorePrivate
     Qt6::Gui

@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -100,7 +102,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v1.1.1' }
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'v1.2.0' }
           $notes = "### 3dmaster for Windows QuickLook (Full Edition with OpenCASCADE 8.0.0)`n`n" +
                    "Supported formats: STEP (.stp, .step), IGES (.igs, .iges), glTF (.gltf, .glb), 3MF, STL, OBJ, PLY, OFF, PRT.`n`n" +
                    "**Installation:**`n" +
