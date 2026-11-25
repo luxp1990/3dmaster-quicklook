@@ -700,21 +700,27 @@ void MasterWidget::buildBuffers() {
             }
         }
 
-        gm.vao->release();
-        gm.vbo->release();
-        gm.ibo->release();
+        // 棱线/线段网格跳过了缓冲创建，vao/vbo/ibo 为空，不得 release/入原型缓存（与 seer 版守卫对齐）
+        if (!(gm.isFeatureEdge || gm.primitiveType == 0x0001)) {
+            gm.vao->release();
+            gm.vbo->release();
+            gm.ibo->release();
+        }
 
-        if (mesh.prototypeId >= 0) {
+        if (mesh.prototypeId >= 0 && !(gm.isFeatureEdge || gm.primitiveType == 0x0001)) {
             protoCache[protoKey] = { gm.vao, gm.vbo, gm.ibo, gm.indexCount, gm.isCompact };
         }
 
         m_glMeshes.push_back(gm);
 
         // Release CPU mesh to save RAM
-        mesh.vertices.clear();
-        mesh.vertices.shrink_to_fit();
-        mesh.indices.clear();
-        mesh.indices.shrink_to_fit();
+        // 棱线/线段网格除外：updateBatchedEdgeBuffer() 会反复从 srcMesh 读顶点，清掉棱线就再也画不出来
+        if (!(gm.isFeatureEdge || gm.primitiveType == 0x0001)) {
+            mesh.vertices.clear();
+            mesh.vertices.shrink_to_fit();
+            mesh.indices.clear();
+            mesh.indices.shrink_to_fit();
+        }
     }
 
     if (m_program) {
