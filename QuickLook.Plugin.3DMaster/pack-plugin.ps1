@@ -46,18 +46,33 @@ Get-ChildItem -Path $csharpReleaseDir -Exclude *.pdb,*.xml,QuickLook.Common.dll 
 }
 Copy-Item $previewExe "$distDir\" -Force
 
-Write-Host "[3/6] Copying Microsoft Visual C++ 2015-2022 (v143) Runtime Closure..."
+Write-Host "[3/6] Locating Microsoft Visual C++ 2015-2022 (v143) Runtime directory..."
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vcRedistDir = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\14.44.35112\x64\Microsoft.VC143.CRT"
 if (-not (Test-Path $vcRedistDir)) {
-    $found = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC" -Recurse -Filter "msvcp140.dll" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*x64\Microsoft.VC14*.CRT*" } | Select-Object -First 1
-    if ($found) { $vcRedistDir = $found.DirectoryName }
+    $vcRedistRoots = @("C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC")
+    if (Test-Path $vswhere) {
+        $vsInstall = & $vswhere -latest -products * -property installationPath 2>$null
+        if ($vsInstall) {
+            $vcRedistRoots = @((Join-Path $vsInstall "VC\Redist\MSVC")) + $vcRedistRoots
+        }
+    }
+    foreach ($root in $vcRedistRoots) {
+        if (Test-Path $root) {
+            $found = Get-ChildItem -Path $root -Recurse -Filter "msvcp140.dll" -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -like "*x64\Microsoft.VC14*.CRT*" } |
+                Select-Object -First 1
+            if ($found) {
+                $vcRedistDir = $found.DirectoryName
+                break
+            }
+        }
+    }
 }
 if (Test-Path $vcRedistDir) {
-    Get-ChildItem -Path $vcRedistDir -Filter "*.dll" | ForEach-Object {
-        Copy-Item $_.FullName "$distDir\" -Force
-    }
-    Write-Host "  -> Bundled official MSVC CRT runtime files from $vcRedistDir"
+    Write-Host "  -> Found MSVC CRT redist directory: $vcRedistDir (closure members will be copied in step [5/6])"
 } else {
+    $vcRedistDir = $null
     Write-Warning "Could not find MSVC CRT redist directory! Target machine may require VC++ runtime."
 }
 
@@ -86,10 +101,105 @@ if (Test-Path (Join-Path $qtPlugins "styles\qmodernwindowsstyle.dll")) {
 # 写入 qt.conf 确保完全绿色独立
 Set-Content -Path "$distDir\qt.conf" -Value "[Paths]`nPrefix=.`nPlugins=.`n" -Encoding ASCII
 
-Write-Host "[5/6] Copying OpenCASCADE 8.0 & TBB multithreading runtime closure..."
-Get-ChildItem -Path $occtBin -Filter "*.dll" | ForEach-Object {
-    Copy-Item $_.FullName "$distDir\" -Force
+Write-Host "[5/6] Computing transitive PE import closure via dumpbin..."
+if (-not (Test-Path $vswhere)) {
+    throw "vswhere.exe not found at $vswhere. Cannot locate dumpbin.exe for dependency-closure copy."
 }
+$vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $vsPath) {
+    $vsPath = & $vswhere -latest -products * -property installationPath
+}
+if (-not $vsPath) {
+    throw "Visual Studio installation not found via vswhere. Cannot locate dumpbin.exe."
+}
+$dumpbin = Get-ChildItem -Path (Join-Path $vsPath "VC\Tools\MSVC") -Recurse -Filter "dumpbin.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match '\\Hostx64\\x64\\dumpbin\.exe$' } |
+    Select-Object -First 1 -ExpandProperty FullName
+if (-not $dumpbin) {
+    $dumpbin = Get-ChildItem -Path (Join-Path $vsPath "VC\Tools\MSVC") -Recurse -Filter "dumpbin.exe" -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $dumpbin -or -not (Test-Path $dumpbin)) {
+    throw "dumpbin.exe not found under $vsPath. Refusing to fall back to copy-all."
+}
+Write-Host "  -> Using dumpbin: $dumpbin"
+
+$searchDirs = @()
+if (Test-Path $occtBin) { $searchDirs += $occtBin }
+if (Test-Path $qtBin) { $searchDirs += $qtBin }
+if ($vcRedistDir -and (Test-Path $vcRedistDir)) { $searchDirs += $vcRedistDir }
+
+$queue = New-Object System.Collections.Generic.Queue[string]
+$visited = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
+# Seed closure with 3dmaster-preview.exe, staged C# plugin assemblies, and staged Qt binaries/plugins
+Get-ChildItem -Path $distDir -Recurse -File -Include *.exe,*.dll | ForEach-Object {
+    if ($visited.Add($_.Name)) {
+        $queue.Enqueue($_.FullName)
+    }
+}
+
+$copiedClosureCount = 0
+while ($queue.Count -gt 0) {
+    $currentPe = $queue.Dequeue()
+    $dumpOutput = & $dumpbin /nologo /dependents $currentPe
+    if ($LASTEXITCODE -ne 0) {
+        throw "dumpbin /dependents failed for $currentPe (exit code $LASTEXITCODE)"
+    }
+    foreach ($line in $dumpOutput) {
+        if ($line -match '^\s+([A-Za-z0-9_.\-+]+\.(?:dll|exe))\s*$') {
+            $depName = $Matches[1]
+            if (-not $visited.Add($depName)) { continue }
+
+            $stagedTarget = Join-Path $distDir $depName
+            if (Test-Path $stagedTarget) {
+                $queue.Enqueue($stagedTarget)
+                continue
+            }
+
+            foreach ($dir in $searchDirs) {
+                $candidate = Join-Path $dir $depName
+                if (Test-Path $candidate) {
+                    Copy-Item $candidate "$distDir\" -Force
+                    $copiedClosureCount++
+                    $queue.Enqueue((Join-Path $distDir $depName))
+                    break
+                }
+            }
+        }
+    }
+}
+Write-Host "  -> Copied $copiedClosureCount closure member(s) from OCCT / Qt / VC CRT directories."
+
+Write-Host "[Gate] Verifying PE import tables in dist for debug CRTs..."
+$forbiddenDebugCrts = @('vcruntime140d.dll', 'msvcp140d.dll', 'ucrtbased.dll')
+$offenders = @()
+Get-ChildItem -Path $distDir -Recurse -File -Include *.dll,*.exe | Sort-Object FullName | ForEach-Object {
+    $peFile = $_
+    $importsOutput = & $dumpbin /nologo /imports $peFile.FullName
+    if ($LASTEXITCODE -ne 0) {
+        throw "dumpbin /imports failed for $($peFile.FullName) (exit code $LASTEXITCODE)"
+    }
+    $matchedCrts = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($line in $importsOutput) {
+        if ($line -match '^\s{4}([A-Za-z0-9_.\-+]+\.dll)\s*$') {
+            $importedDll = $Matches[1]
+            if ($forbiddenDebugCrts -contains $importedDll.ToLowerInvariant()) {
+                [void]$matchedCrts.Add($importedDll)
+            }
+        }
+    }
+    if ($matchedCrts.Count -gt 0) {
+        $rel = $peFile.FullName.Substring($distDir.Length).TrimStart('\', '/')
+        $offenders += "  $rel -> $(($matchedCrts | Sort-Object) -join ', ')"
+    }
+}
+if ($offenders.Count -gt 0) {
+    Write-Host "ERROR: Debug CRT imports detected in staged dist binaries:" -ForegroundColor Red
+    $offenders | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+    throw "Debug CRT import gate failed! Found $($offenders.Count) offender(s) in $distDir."
+}
+Write-Host "  -> Gate passed: 0 debug CRT imports across all .dll/.exe in dist."
 
 Write-Host "[6/6] Generating archives with .NET ZipFile API..."
 Add-Type -AssemblyName System.IO.Compression.FileSystem
